@@ -418,13 +418,23 @@ if __name__=='__main__':
 
     
     weight_shape = (192*128//32//32, 4*192*128)
-    AutotuneLayer3D((32,16,8), 8*32*16*2048, 192*128, 4*192*128, 
+    AutotuneLayer3D((32,32,4), 8*32*16*2048, 192*128, 4*192*128, 
                     flops=989*10**12, bw=75*10**9, link_latency=5e-6, algorithm='GSPMD', steps=16)
-    AutotuneLayer3D((8,32,16), 8*32*16*2048, 192*128, 4*192*128, 
+    AutotuneLayer3D((4,32,32), 8*32*16*2048, 192*128, 4*192*128, 
                     flops=989*10**12, bw=75*10**9, link_latency=5e-6, algorithm='Ours', steps=16)
-    print(estimate1bitAdam(256, 20e-6, bw=100*1024*1024*1024//8, data_shape=weight_shape, precision=8)*1000)
+    print(estimate1bitAdam(256, 15e-6, bw=100*1024*1024*1024//8, data_shape=weight_shape, precision=8)*1000)
 
     AutotuneLayer3D((4,16,8), 4*8*16*2048, 192*128, 192*128, 
                     flops=989*10**12, bw=75*10**9, link_latency=5e-6, algorithm='GSPMD', steps=16)
-    AutotuneLayer3D((8,32,16), 8*32*16*2048, 192*128, 192*128, 
+    AutotuneLayer3D((4,32,32), 8*32*16*2048, 192*128, 192*128, 
                     flops=989*10**12, bw=75*10**9, link_latency=5e-6, algorithm='Ours', steps=16)
+    #myMesh2 = DeviceMesh((512,8), 989*10**12, 75*10**9, link_latency=5e-6) 
+    #MeshTune(myMesh2, GSPMD_OS, 16*8*32*2048, 192*128, 4*192*128, verbose=True)
+
+    weight_shape = (192*128//32//64, 4*192*128)
+    print(estimate1bitAdam(512, 15e-6, bw=100*1024*1024*1024//8, data_shape=weight_shape, precision=8)*1000)
+
+    AutotuneLayer3D((4,16,8), 4*8*16*2048, 192*128, 192*128, 
+                    flops=272*10**12, bw=50*10**9, link_latency=5e-6, algorithm='GSPMD', steps=16)
+    AutotuneLayer3D((4,32,64), 4*32*64*2048, 192*128, 192*128, 
+                    flops=272*10**12, bw=50*10**9, link_latency=5e-6, algorithm='Ours', steps=16)

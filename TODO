@@ -1,0 +1,6 @@
+- precision (32bit) (Done)
+- 2D collective (Done)
+- K autotuning
+- 3D parallelism (Done)
+- Mesh tuning results (Done)
+- Unbalanced bw
