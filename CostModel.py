@@ -1,13 +1,16 @@
 import numpy as np
+import torch
+import time
 
 
 class DeviceMesh:
-    def __init__(self, device_shape: tuple, flops_per_chip: int, bw_per_direction:int, link_latency=2e-6):
+    def __init__(self, device_shape: tuple, flops_per_chip: int, bw_per_direction:int, link_latency=3e-6, base_overhead=9e-6):
         self.reshape(device_shape)
         
         self.flops = flops_per_chip
         self.bw = bw_per_direction
         self.link_latency = link_latency
+        self.base_overhead = base_overhead
     def reshape(self, newshape):
         self.shape = newshape
         self.meshdim = None
@@ -39,7 +42,7 @@ def estimateBroadcast(mesh, data_shape: tuple, dim: int, precision):
         #    r,c, halfsize / (mesh.bw*2)*1000, total_latency*1000
         #))
         return halfsize / (mesh.bw*2) + total_latency
-    return time_per_step + mesh.link_latency*(mesh.shape[dim]-1)
+    return mesh.base_overhead + time_per_step + mesh.link_latency*(mesh.shape[dim]-1)
 
 def estimateAllgather(mesh, data_shape: tuple, dim: int, precision):
     data_size = data_shape[0]*data_shape[1]*precision//8
@@ -57,17 +60,39 @@ def estimateAllgather(mesh, data_shape: tuple, dim: int, precision):
         #    r,c, max(row_first, col_first)*1000, total_latency*1000
         #))
         return max(row_first, col_first) + total_latency
-    return steps*time_per_step + mesh.link_latency*steps
+    return mesh.base_overhead + steps*time_per_step + mesh.link_latency*steps
     
 def estimateSkew(mesh, data_shape: tuple, precision):
     assert mesh.shape[0] == mesh.shape[1]
     steps = mesh.shape[0]//2
     time_per_step = data_shape[0]*data_shape[1] * (precision//8) / (mesh.bw*2)
-    return steps * time_per_step + mesh.link_latency*steps
+    return mesh.base_overhead + steps * time_per_step + mesh.link_latency*steps
 
-def estimateMatmul(mesh, M, N, K):
-    flop_count = M*N*K*2
-    return flop_count / mesh.flops
+def estimateMatmul(mesh, M, N, K, input_precision=torch.float16, output_precision=torch.float32, repeat=10):
+    #flop_count = M*N*K*2
+    #return flop_count/mesh.flops
+    
+    A = torch.zeros(M,K).to(device='cuda',dtype=input_precision)
+    B = torch.zeros(K,N).to(device='cuda',dtype=input_precision)
+    #C = torch.zeros(M,N).to(device='cuda',dtype=output_precision)
+    C = torch.mm(A,B)
+    torch.cuda.synchronize()
+
+    start_event = torch.cuda.Event(enable_timing=True)
+    end_event = torch.cuda.Event(enable_timing=True)
+    start_event.record()
+
+    for _ in range(repeat):
+        torch.matmul(A,B, out=C)
+        #torch.cuda.synchronize()
+
+    end_event.record()
+    torch.cuda.synchronize()  # Wait for the events to be recorded!
+    elapsed_time_ms = start_event.elapsed_time(end_event)
+    
+    return (elapsed_time_ms)/repeat/1000
+    
+    
 
 def estimateReduce(mesh, data_shape: tuple, dim: int, precision):
     data_size = data_shape[0]*data_shape[1]*precision//8
@@ -77,7 +102,7 @@ def estimateReduce(mesh, data_shape: tuple, dim: int, precision):
         halfsize = data_size // 2
         total_latency = mesh.link_latency * (r+c-1)
         return halfsize / (mesh.bw*2) + total_latency
-    return time_per_step + mesh.link_latency*(mesh.shape[dim]-1)
+    return mesh.base_overhead + time_per_step + mesh.link_latency*(mesh.shape[dim]-1)
 
 def estimateReduceScatter(mesh, data_shape: tuple, dim: int, precision):
     data_size = data_shape[0]*data_shape[1]*precision//8
@@ -90,7 +115,7 @@ def estimateReduceScatter(mesh, data_shape: tuple, dim: int, precision):
         row_first = (halfsize/(mesh.bw*2)) * (r-1) + (halfsize*r/(mesh.bw*2))*(c-1)
         col_first = (halfsize/(mesh.bw*2)) * (c-1) + (halfsize*c/(mesh.bw*2))*(r-1)
         return max(row_first, col_first) + total_latency
-    return steps*time_per_step + mesh.link_latency*steps
+    return mesh.base_overhead + steps*time_per_step + mesh.link_latency*steps
 
 def SUMMA_OS(mesh, M, N, K, steps=8, precisions=(16,16,16)):
     steps = np.lcm(mesh.shape[0], mesh.shape[1])
@@ -365,10 +390,14 @@ def estimate1bitAdam(dim, link_latency, bw, data_shape: tuple, precision):
 if __name__=='__main__':
     N=32
     flops = flops=240*1024**4
-    bw=40*1024**3
-    myMesh = DeviceMesh((N,N), flops, bw, link_latency=1e-6) 
+    bw=44*1024**3
+    #myMesh = DeviceMesh((N,N), flops, bw, link_latency=3e-6) 
+
+    myMesh = DeviceMesh(((16,8),4), flops, bw, link_latency=3e-6) 
     
-    SUMMA_OS(myMesh,2*64*2048, 4*96*128, 96*128)
+    print(SUMMA_OS(myMesh,4*8*16*2048, 4*192*128, 192*128))
+    print(GSPMD_OS(myMesh,4*8*16*2048, 4*192*128, 192*128))
+    print(Systolic_OS(myMesh,4*8*16*2048, 4*192*128, 192*128, steps=8))
     
     #MeshTune3D([4,8,16], Systolic_OS, 2*128*2048, 160*128, 4*160*128,flops, bw, verbose=True)
     #MeshTune3D([4,8,16], SUMMA_OS, 2*128*2048, 160*128, 4*160*128,flops, bw, verbose=True)
@@ -379,44 +408,44 @@ if __name__=='__main__':
     #MeshTune(myMesh, Systolic_IS, 2*256*2048, 4*160*128, 160*128,verbose=True, steps=16)
     #MeshTune(myMesh, Systolic_WS, 160*128, 4*160*128, 2*256*2048, verbose=True, precisions=(16,16,32), steps=16)
 
-    AutotuneLayer3D((8,16,4), 2*128*2048, 160*128, 4*160*128, algorithm='SUMMA')
-    AutotuneLayer3D((8,16,4), 2*128*2048, 160*128, 4*160*128, algorithm='GSPMD')
-    AutotuneLayer3D((8,16,4), 2*128*2048, 160*128, 4*160*128, algorithm='Ours', steps=32)
+    #AutotuneLayer3D((8,16,4), 2*128*2048, 160*128, 4*160*128, algorithm='SUMMA')
+    #AutotuneLayer3D((8,16,4), 2*128*2048, 160*128, 4*160*128, algorithm='GSPMD')
+    #AutotuneLayer3D((8,16,4), 2*128*2048, 160*128, 4*160*128, algorithm='Ours', steps=32)
 
-    AutotuneLayer3D((8,32,4), 2*256*2048, 160*128, 4*160*128, algorithm='SUMMA')
-    AutotuneLayer3D((8,32,4), 2*256*2048, 160*128, 4*160*128, algorithm='GSPMD')
-    AutotuneLayer3D((8,32,4), 2*256*2048, 160*128, 4*160*128, algorithm='Ours', steps=16)
+    #AutotuneLayer3D((8,32,4), 2*256*2048, 160*128, 4*160*128, algorithm='SUMMA')
+    #AutotuneLayer3D((8,32,4), 2*256*2048, 160*128, 4*160*128, algorithm='GSPMD')
+    #AutotuneLayer3D((8,32,4), 2*256*2048, 160*128, 4*160*128, algorithm='Ours', steps=16)
 
-    AutotuneLayer3D((4,32,16), 2*512*2048, 160*128, 4*160*128, algorithm='SUMMA')
-    AutotuneLayer3D((4,32,16), 2*512*2048, 160*128, 4*160*128, algorithm='GSPMD')
-    AutotuneLayer3D((4,32,16), 2*512*2048, 160*128, 4*160*128, algorithm='Ours', steps=16)
+    #AutotuneLayer3D((4,32,16), 2*512*2048, 160*128, 4*160*128, algorithm='SUMMA')
+    #AutotuneLayer3D((4,32,16), 2*512*2048, 160*128, 4*160*128, algorithm='GSPMD')
+    #AutotuneLayer3D((4,32,16), 2*512*2048, 160*128, 4*160*128, algorithm='Ours', steps=16)
 
-    AutotuneLayer3D((8,16,32), 2*1024*2048, 160*128, 4*160*128, algorithm='SUMMA')
-    AutotuneLayer3D((8,16,32), 2*1024*2048, 160*128, 4*160*128, algorithm='GSPMD')
-    AutotuneLayer3D((8,16,32), 2*1024*2048, 160*128, 4*160*128, algorithm='Ours', steps=16)
+    #AutotuneLayer3D((8,16,32), 2*1024*2048, 160*128, 4*160*128, algorithm='SUMMA')
+    #AutotuneLayer3D((8,16,32), 2*1024*2048, 160*128, 4*160*128, algorithm='GSPMD')
+    #AutotuneLayer3D((8,16,32), 2*1024*2048, 160*128, 4*160*128, algorithm='Ours', steps=16)
 
-    AutotuneLayer3D((8,32,32), 2*2048*2048, 160*128, 4*160*128, algorithm='SUMMA')
-    AutotuneLayer3D((8,32,32), 2*2048*2048, 160*128, 4*160*128, algorithm='GSPMD')
-    AutotuneLayer3D((8,32,32), 2*2048*2048, 160*128, 4*160*128, algorithm='Ours', steps=16)
+    #AutotuneLayer3D((8,32,32), 2*2048*2048, 160*128, 4*160*128, algorithm='SUMMA')
+    #AutotuneLayer3D((8,32,32), 2*2048*2048, 160*128, 4*160*128, algorithm='GSPMD')
+    #AutotuneLayer3D((8,32,32), 2*2048*2048, 160*128, 4*160*128, algorithm='Ours', steps=16)
 
-    AutotuneLayer3D((8,32,64), 2*4096*2048, 160*128, 4*160*128, algorithm='SUMMA')
-    AutotuneLayer3D((8,32,64), 2*4096*2048, 160*128, 4*160*128, algorithm='GSPMD')
-    AutotuneLayer3D((8,32,64), 2*4096*2048, 160*128, 4*160*128, algorithm='Ours', steps=16)
+    #AutotuneLayer3D((8,32,64), 2*4096*2048, 160*128, 4*160*128, algorithm='SUMMA')
+    #AutotuneLayer3D((8,32,64), 2*4096*2048, 160*128, 4*160*128, algorithm='GSPMD')
+    #AutotuneLayer3D((8,32,64), 2*4096*2048, 160*128, 4*160*128, algorithm='Ours', steps=16)
 
-    AutotuneLayer3D((8,64,64), 2*8192*2048, 160*128, 4*160*128, algorithm='SUMMA')
-    AutotuneLayer3D((8,64,64), 2*8192*2048, 160*128, 4*160*128, algorithm='GSPMD')
-    AutotuneLayer3D((8,64,64), 2*8192*2048, 160*128, 4*160*128, algorithm='Ours', steps=16)
+    #AutotuneLayer3D((8,64,64), 2*8192*2048, 160*128, 4*160*128, algorithm='SUMMA')
+    #AutotuneLayer3D((8,64,64), 2*8192*2048, 160*128, 4*160*128, algorithm='GSPMD')
+    #AutotuneLayer3D((8,64,64), 2*8192*2048, 160*128, 4*160*128, algorithm='Ours', steps=16)
 
-    AutotuneLayer3D((8,128,64), 2*4096*4*2048, 160*128, 4*160*128, algorithm='SUMMA')
-    AutotuneLayer3D((8,128,64), 2*4096*4*2048, 160*128, 4*160*128, algorithm='GSPMD')
-    AutotuneLayer3D((8,128,64), 2*4096*4*2048, 160*128, 4*160*128, algorithm='Ours', steps=8)
+    #AutotuneLayer3D((8,128,64), 2*4096*4*2048, 160*128, 4*160*128, algorithm='SUMMA')
+    #AutotuneLayer3D((8,128,64), 2*4096*4*2048, 160*128, 4*160*128, algorithm='GSPMD')
+    #AutotuneLayer3D((8,128,64), 2*4096*4*2048, 160*128, 4*160*128, algorithm='Ours', steps=8)
     
     #Systolic_OS(DeviceMesh(((32,64),8), flops, bw, link_latency=3e-6), 2*4096*2048, 160*128, 4*160*128)
     #SUMMA_OS(DeviceMesh(((32,64),8), flops, bw, link_latency=3e-6), 2*4096*2048, 160*128, 4*160*128)
-    weight_shape = (160*128//16//32, 4*160*128)
-    print(estimate1bitAdam(256, 15e-6, bw=100*1024*1024*1024//8, data_shape=weight_shape, precision=8)*1000)
+    #weight_shape = (160*128//16//32, 4*160*128)
+    #print(estimate1bitAdam(256, 15e-6, bw=100*1024*1024*1024//8, data_shape=weight_shape, precision=8)*1000)
 
-    
+    '''
     weight_shape = (192*128//32//32, 4*192*128)
     AutotuneLayer3D((32,32,4), 8*32*16*2048, 192*128, 4*192*128, 
                     flops=989*10**12, bw=75*10**9, link_latency=5e-6, algorithm='GSPMD', steps=16)
@@ -438,3 +467,8 @@ if __name__=='__main__':
                     flops=272*10**12, bw=50*10**9, link_latency=5e-6, algorithm='GSPMD', steps=16)
     AutotuneLayer3D((4,32,64), 4*32*64*2048, 192*128, 192*128, 
                     flops=272*10**12, bw=50*10**9, link_latency=5e-6, algorithm='Ours', steps=16)
+    
+    '''
+    #AutotuneLayer3D((4,16,8), 4*8*16*2048, 192*128, 192*128, 
+    #                flops=300*10**12, bw=44*10**9, link_latency=3e-6, algorithm='GSPMD', steps=8)
+    
