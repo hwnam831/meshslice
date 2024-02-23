@@ -41,7 +41,7 @@ def estimateBroadcast(mesh, data_shape: tuple, dim: int, precision):
         #print("2D {}x{} version is now traffic:{}ms, latency: {}ms".format(
         #    r,c, halfsize / (mesh.bw*2)*1000, total_latency*1000
         #))
-        return halfsize / (mesh.bw*2) + total_latency
+        return mesh.base_overhead + halfsize / (mesh.bw*2) + total_latency
     return mesh.base_overhead + time_per_step + mesh.link_latency*(mesh.shape[dim]-1)
 
 def estimateAllgather(mesh, data_shape: tuple, dim: int, precision):
@@ -59,7 +59,7 @@ def estimateAllgather(mesh, data_shape: tuple, dim: int, precision):
         #print("2D {}x{} version is now traffic:{}ms, latency: {}ms".format(
         #    r,c, max(row_first, col_first)*1000, total_latency*1000
         #))
-        return max(row_first, col_first) + total_latency
+        return mesh.base_overhead + max(row_first, col_first) + total_latency
     return mesh.base_overhead + steps*time_per_step + mesh.link_latency*steps
     
 def estimateSkew(mesh, data_shape: tuple, precision):
@@ -83,7 +83,7 @@ def estimateMatmul(mesh, M, N, K, input_precision=torch.float16, output_precisio
     start_event.record()
 
     for _ in range(repeat):
-        torch.matmul(A,B, out=C)
+        torch.mm(A,B, out=C)
         #torch.cuda.synchronize()
 
     end_event.record()
@@ -91,6 +91,10 @@ def estimateMatmul(mesh, M, N, K, input_precision=torch.float16, output_precisio
     elapsed_time_ms = start_event.elapsed_time(end_event)
     
     return (elapsed_time_ms)/repeat/1000
+    
+def estimateMatmul(mesh, M, N, K, input_precision=torch.float16, output_precision=torch.float32, repeat=10):
+    flop_count = M*N*K*2
+    return flop_count/mesh.flops
     
     
 
@@ -101,7 +105,7 @@ def estimateReduce(mesh, data_shape: tuple, dim: int, precision):
         r,c = mesh.submesh
         halfsize = data_size // 2
         total_latency = mesh.link_latency * (r+c-1)
-        return halfsize / (mesh.bw*2) + total_latency
+        return mesh.base_overhead + halfsize / (mesh.bw*2) + total_latency
     return mesh.base_overhead + time_per_step + mesh.link_latency*(mesh.shape[dim]-1)
 
 def estimateReduceScatter(mesh, data_shape: tuple, dim: int, precision):
@@ -114,7 +118,7 @@ def estimateReduceScatter(mesh, data_shape: tuple, dim: int, precision):
         total_latency = mesh.link_latency * (r+c-2)
         row_first = (halfsize/(mesh.bw*2)) * (r-1) + (halfsize*r/(mesh.bw*2))*(c-1)
         col_first = (halfsize/(mesh.bw*2)) * (c-1) + (halfsize*c/(mesh.bw*2))*(r-1)
-        return max(row_first, col_first) + total_latency
+        return mesh.base_overhead + max(row_first, col_first) + total_latency
     return mesh.base_overhead + steps*time_per_step + mesh.link_latency*steps
 
 def SUMMA_OS(mesh, M, N, K, steps=8, precisions=(16,16,16)):
@@ -350,8 +354,8 @@ def AutotuneLayer3D(dims, B, I, O, algorithm='SUMMA', flops=240*1024**4, bw=40*1
     shapes = [(dims[0],(dims[1],dims[2])), (dims[1],(dims[0],dims[2])),(dims[2],(dims[1],dims[0])),
               ((dims[1],dims[2]), dims[0]), ((dims[0],dims[2]), dims[1]), ((dims[1],dims[0]), dims[2])]
     mesh = DeviceMesh(shapes[0], flops, bw, link_latency)
-    comm_fw, overlap_fw = funcs['OS'](mesh, B, I, O, steps=steps)
-    comm_bd, overlap_bd = funcs['IS'](mesh, B, O, I, steps=steps)
+    comm_fw, overlap_fw = funcs['OS'](mesh, B, O, I, steps=steps)
+    comm_bd, overlap_bd = funcs['IS'](mesh, B, I, O, steps=steps)
     comm_bw, overlap_bw = funcs['WS'](mesh, I, O, B, steps=steps, precisions=(16,16,32))
     bestcomm = (comm_fw + comm_bd + comm_bw)
     bestoverlap = (overlap_fw + overlap_bd + overlap_bw)
@@ -359,8 +363,48 @@ def AutotuneLayer3D(dims, B, I, O, algorithm='SUMMA', flops=240*1024**4, bw=40*1
     bestshape = shapes[0]
     for s in shapes:
         mesh.reshape(s)
-        comm_fw, overlap_fw = funcs['OS'](mesh, B, I, O, steps=steps)
-        comm_bd, overlap_bd = funcs['IS'](mesh, B, O, I, steps=steps)
+        comm_fw, overlap_fw = funcs['OS'](mesh, B, O, I, steps=steps)
+        comm_bd, overlap_bd = funcs['IS'](mesh, B, I, O, steps=steps)
+        comm_bw, overlap_bw = funcs['WS'](mesh, I, O, B, steps=steps, precisions=(16,16,32))
+        comm = (comm_fw + comm_bd + comm_bw)
+        overlap = (overlap_fw + overlap_bd + overlap_bw)
+        if comm+overlap < bestcomm + bestoverlap:
+            bestshape = s
+            bestcomm = comm
+            bestoverlap = overlap
+        #print("Best mesh for {} is {}x{}, result: {}".format(
+        #    func.__name__,meshshape[0],meshshape[1],tup2ms(func(mesh, M, N, K))))
+        
+        
+    mesh.reshape(bestshape)
+    if verbose:
+        print("Best mesh for, {} ,is, {},{}, result:, {:.4f}, {:.4f}, ms".format(
+        algorithm,bestshape[0],bestshape[1],bestcomm*1000, bestoverlap*1000))
+    return bestshape
+
+def AutotuneLayer3D2(dims, B, I, O, algorithm='SUMMA', flops=240*1024**4, bw=40*1024**3,link_latency=6e-6, verbose=True, steps=32):
+    
+    if algorithm == 'SUMMA':
+        funcs = {'OS':SUMMA_OS, 'IS':SUMMA_IS, 'WS':SUMMA_WS}
+    elif algorithm == 'GSPMD':
+        funcs = {'OS':GSPMD_OS, 'IS':GSPMD_IS, 'WS':GSPMD_WS}
+    else:
+        funcs = {'OS':Systolic_OS, 'IS':Systolic_IS, 'WS':Systolic_WS}
+    
+    shapes = [(dims[0],dims[1]*dims[2]), (dims[1],dims[0]*dims[2]),(dims[2],dims[1]*dims[0]),
+              ((dims[1]*dims[2]), dims[0]), ((dims[0]*dims[2]), dims[1]), ((dims[1]*dims[0]), dims[2])]
+    mesh = DeviceMesh(shapes[0], flops, bw, link_latency)
+    comm_fw, overlap_fw = funcs['OS'](mesh, B, O, I, steps=steps)
+    comm_bd, overlap_bd = funcs['IS'](mesh, B, I, O, steps=steps)
+    comm_bw, overlap_bw = funcs['WS'](mesh, I, O, B, steps=steps, precisions=(16,16,32))
+    bestcomm = (comm_fw + comm_bd + comm_bw)
+    bestoverlap = (overlap_fw + overlap_bd + overlap_bw)
+    
+    bestshape = shapes[0]
+    for s in shapes:
+        mesh.reshape(s)
+        comm_fw, overlap_fw = funcs['OS'](mesh, B, O, I, steps=steps)
+        comm_bd, overlap_bd = funcs['IS'](mesh, B, I, O, steps=steps)
         comm_bw, overlap_bw = funcs['WS'](mesh, I, O, B, steps=steps, precisions=(16,16,32))
         comm = (comm_fw + comm_bd + comm_bw)
         overlap = (overlap_fw + overlap_bd + overlap_bw)
@@ -389,15 +433,16 @@ def estimate1bitAdam(dim, link_latency, bw, data_shape: tuple, precision):
 
 if __name__=='__main__':
     N=32
-    flops = flops=240*1024**4
+    flops=300*1024**4
     bw=44*1024**3
     #myMesh = DeviceMesh((N,N), flops, bw, link_latency=3e-6) 
 
-    myMesh = DeviceMesh(((16,8),4), flops, bw, link_latency=3e-6) 
+    #myMesh = DeviceMesh(((16,4),8), flops, bw, link_latency=6e-6)
+    myMesh = DeviceMesh((64,8), flops, bw, link_latency=6e-6) 
     
-    print(SUMMA_OS(myMesh,4*8*16*2048, 4*192*128, 192*128))
-    print(GSPMD_OS(myMesh,4*8*16*2048, 4*192*128, 192*128))
-    print(Systolic_OS(myMesh,4*8*16*2048, 4*192*128, 192*128, steps=8))
+    print(SUMMA_OS(myMesh,4*8*16*2048, 4*96*128, 96*128))
+    print(GSPMD_OS(myMesh,4*8*16*2048, 4*96*128, 96*128))
+    print(Systolic_OS(myMesh,4*8*16*2048, 4*96*128, 96*128, steps=8))
     
     #MeshTune3D([4,8,16], Systolic_OS, 2*128*2048, 160*128, 4*160*128,flops, bw, verbose=True)
     #MeshTune3D([4,8,16], SUMMA_OS, 2*128*2048, 160*128, 4*160*128,flops, bw, verbose=True)
@@ -408,9 +453,17 @@ if __name__=='__main__':
     #MeshTune(myMesh, Systolic_IS, 2*256*2048, 4*160*128, 160*128,verbose=True, steps=16)
     #MeshTune(myMesh, Systolic_WS, 160*128, 4*160*128, 2*256*2048, verbose=True, precisions=(16,16,32), steps=16)
 
-    #AutotuneLayer3D((8,16,4), 2*128*2048, 160*128, 4*160*128, algorithm='SUMMA')
-    #AutotuneLayer3D((8,16,4), 2*128*2048, 160*128, 4*160*128, algorithm='GSPMD')
-    #AutotuneLayer3D((8,16,4), 2*128*2048, 160*128, 4*160*128, algorithm='Ours', steps=32)
+    AutotuneLayer3D((8,16,8), 4*128*2048, 160*128, 4*160*128, flops=flops, algorithm='SUMMA')
+    AutotuneLayer3D((8,16,8), 4*128*2048, 160*128, 4*160*128, flops=flops, algorithm='GSPMD')
+    AutotuneLayer3D((8,16,8), 4*128*2048, 160*128, 4*160*128, flops=flops, algorithm='Ours', steps=8)
+
+    AutotuneLayer3D((8,16,8), 4*128*2048, 160*128, 3*160*128, flops=flops, algorithm='SUMMA')
+    AutotuneLayer3D((8,16,8), 4*128*2048, 160*128, 3*160*128, flops=flops, algorithm='GSPMD')
+    AutotuneLayer3D((8,16,8), 4*128*2048, 160*128, 3*160*128, flops=flops, algorithm='Ours', steps=8)
+
+    AutotuneLayer3D((8,16,8), 4*128*2048, 160*128, 160*128, flops=flops, algorithm='SUMMA')
+    AutotuneLayer3D((8,16,8), 4*128*2048, 160*128, 160*128, flops=flops, algorithm='GSPMD')
+    AutotuneLayer3D((8,16,8), 4*128*2048, 160*128, 160*128, flops=flops, algorithm='Ours', steps=8)
 
     #AutotuneLayer3D((8,32,4), 2*256*2048, 160*128, 4*160*128, algorithm='SUMMA')
     #AutotuneLayer3D((8,32,4), 2*256*2048, 160*128, 4*160*128, algorithm='GSPMD')
@@ -420,9 +473,9 @@ if __name__=='__main__':
     #AutotuneLayer3D((4,32,16), 2*512*2048, 160*128, 4*160*128, algorithm='GSPMD')
     #AutotuneLayer3D((4,32,16), 2*512*2048, 160*128, 4*160*128, algorithm='Ours', steps=16)
 
-    #AutotuneLayer3D((8,16,32), 2*1024*2048, 160*128, 4*160*128, algorithm='SUMMA')
-    #AutotuneLayer3D((8,16,32), 2*1024*2048, 160*128, 4*160*128, algorithm='GSPMD')
-    #AutotuneLayer3D((8,16,32), 2*1024*2048, 160*128, 4*160*128, algorithm='Ours', steps=16)
+    AutotuneLayer3D((8,16,16), 1024*2048, 160*128, 4*160*128, flops=flops, algorithm='SUMMA')
+    AutotuneLayer3D((8,16,16), 1024*2048, 160*128, 4*160*128, flops=flops, algorithm='GSPMD')
+    AutotuneLayer3D((8,16,16), 1024*2048, 160*128, 4*160*128, flops=flops, algorithm='Ours', steps=8)
 
     #AutotuneLayer3D((8,32,32), 2*2048*2048, 160*128, 4*160*128, algorithm='SUMMA')
     #AutotuneLayer3D((8,32,32), 2*2048*2048, 160*128, 4*160*128, algorithm='GSPMD')
