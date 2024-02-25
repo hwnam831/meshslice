@@ -1,5 +1,7 @@
 import numpy as np
 import torch
+import torch.nn as nn
+
 import time
 import math
 
@@ -121,6 +123,12 @@ class Torus3D:
         self.base_overhead = base_overhead
         self.permutation = ((0,1),2)
 
+    def meshsize(self,dim):
+        mydim = self.permutation[dim]
+        if type(mydim) is tuple:
+            return self.shape[mydim[0]]*self.shape[mydim[1]]
+        else:
+            return self.shape[mydim]
     def estimateCollective(self, datasize, dim, algorithm='broadcast'):
         mydim = self.permutation[dim]
         if type(mydim) is tuple:
@@ -150,16 +158,276 @@ class Torus3D:
             else:
                 traffic = datasize
             return self.base_overhead + estimateBWTime(traffic, algorithm) + self.link_latency[mydim] * (mysize-1)
+
+def estimateMatmul(M, N, K, input_precision=torch.float16, repeat=10):
+    #flop_count = M*N*K*2
+    #return flop_count/mesh.flops
     
-'''
-def emulateForward(mesh, bsize, dim):
-    emulateFF(dim, dim*3)
-    emulateAttention()
-    emulateAddNorm()
-    emulateFF1()
-    emulateFF2()
-    emulateAddNorm()
-'''
+    A = torch.zeros(M,K).to(device='cuda',dtype=input_precision)
+    B = torch.zeros(K,N).to(device='cuda',dtype=input_precision)
+    #C = torch.zeros(M,N).to(device='cuda',dtype=output_precision)
+    C = torch.mm(A,B)
+    torch.cuda.synchronize()
+
+    start_event = torch.cuda.Event(enable_timing=True)
+    end_event = torch.cuda.Event(enable_timing=True)
+    start_event.record()
+
+    for _ in range(repeat):
+        torch.mm(A,B, out=C)
+        #torch.cuda.synchronize()
+
+    end_event.record()
+    torch.cuda.synchronize()  # Wait for the events to be recorded!
+    elapsed_time_ms = start_event.elapsed_time(end_event)
+    
+    return (elapsed_time_ms)/repeat/1000
+
+def estimateAttention(S, B, H, D, repeat=10):
+    
+    Q = torch.randn(B, H, S, D).to(device='cuda',dtype=torch.float16)
+    K = torch.randn(B, H, S, D).to(device='cuda',dtype=torch.float16)
+    V = torch.randn(B, H, S, D).to(device='cuda',dtype=torch.float16)
+    nn.functional.scaled_dot_product_attention(Q,K,V)
+    torch.cuda.synchronize()
+
+    start_event = torch.cuda.Event(enable_timing=True)
+    end_event = torch.cuda.Event(enable_timing=True)
+    start_event.record()
+
+    for _ in range(repeat):
+        out = nn.functional.scaled_dot_product_attention(Q,K,V)
+        #torch.cuda.synchronize()
+
+    end_event.record()
+    torch.cuda.synchronize()  # Wait for the events to be recorded!
+    elapsed_time_ms = start_event.elapsed_time(end_event)
+    compute = (elapsed_time_ms)/repeat/1000
+    return {
+        'prologue':0.0,
+        'gputime': compute,
+        'overlap': compute,
+        'epilogue': 0.0
+    }
+
+def estimateAddNorm(S, B, D, repeat=10):
+    #flop_count = M*N*K*2
+    #return flop_count/mesh.flops
+    
+    X1 = torch.randn(B, S, D).to(device='cuda',dtype=torch.float16)
+    X2 = torch.randn(B, S, D).to(device='cuda',dtype=torch.float16)
+    nn.functional.layer_norm(X1+X2, (D,))
+    torch.cuda.synchronize()
+
+    start_event = torch.cuda.Event(enable_timing=True)
+    end_event = torch.cuda.Event(enable_timing=True)
+    start_event.record()
+
+    for _ in range(repeat):
+        nn.functional.layer_norm(X1+X2, (D,))
+        #torch.cuda.synchronize()
+
+    end_event.record()
+    torch.cuda.synchronize()  # Wait for the events to be recorded!
+    elapsed_time_ms = start_event.elapsed_time(end_event)
+    
+    compute = (elapsed_time_ms)/repeat/1000
+    return {
+        'prologue':0.0,
+        'gputime': compute,
+        'overlap': compute,
+        'epilogue': 0.0
+    }
+
+def bytecount(shape, precision=16):
+    return shape[0]*shape[1]*precision//8
+
+def SUMMA_OS(mesh:Torus3D, M, N, K, steps=8, precisions=(16,16,16)):
+    steps = np.lcm(mesh.meshsize(0), mesh.meshsize(1))
+    ishape = (M//mesh.meshsize(0), K//steps)
+    wshape = (K//steps, N//mesh.meshsize(1))
+    broadcast_i = mesh.estimateCollective(bytecount(ishape, precisions[0]), 1, 'broadcast')
+    broadcast_w = mesh.estimateCollective(bytecount(wshape, precisions[1]), 0, 'broadcast')
+    compute = estimateMatmul(ishape[0], wshape[1], ishape[1])
+
+    return {
+        'prologue':max(broadcast_i, broadcast_w),
+        'gputime': compute,
+        'overlap': max(broadcast_i, broadcast_w, compute) * (steps-1) + compute,
+        'epilogue': 0.0
+    }
+
+
+def SUMMA_IS(mesh:Torus3D, M, N, K, steps=8, precisions=(16,16,16)):
+    steps = np.lcm(mesh.meshsize(0), mesh.meshsize(1))
+    ishape = (M//mesh.meshsize(0), K//mesh.meshsize(1))
+    oshape = (M//mesh.meshsize(0), N//steps)
+    wshape = (N//steps, K//mesh.meshsize(1))
+
+    broadcast_w = mesh.estimateCollective(bytecount(wshape, precisions[1]), 0, 'broadcast')
+    reduce_o = mesh.estimateCollective(bytecount(oshape, precisions[2]), 1, 'reduce')
+    compute = estimateMatmul(ishape[0], oshape[1], ishape[1])
+
+    return {
+        'prologue':broadcast_w,
+        'gputime': compute,
+        'overlap': max(reduce_o, broadcast_w, compute) * (steps-1) + compute,
+        'epilogue': reduce_o
+    }
+
+
+def SUMMA_WS(mesh:Torus3D, M, N, K, steps=8, precisions=(16,16,16)):
+    steps = np.lcm(mesh.meshsize(0), mesh.meshsize(1))
+    ishape = (K//mesh.meshsize(0), M//steps)
+    oshape = (M//steps, N//mesh.meshsize(1))
+    wshape = (K//mesh.meshsize(0), N//mesh.meshsize(1))
+
+    broadcast_i = mesh.estimateCollective(bytecount(ishape, precisions[0]), 1, 'broadcast')
+    reduce_o = mesh.estimateCollective(bytecount(oshape, precisions[2]), 0, 'reduce')
+    compute = estimateMatmul(oshape[0], oshape[1], wshape[0])
+
+    return {
+        'prologue':broadcast_i,
+        'gputime': compute,
+        'overlap': max(reduce_o, broadcast_i, compute) * (steps-1) + compute,
+        'epilogue': reduce_o
+    }
+
+
+
+
+def GSPMD_OS(mesh: Torus3D, M, N, K, steps=8, precisions=(16,16,16)):
+    ishape = (M//mesh.meshsize(0), K//(mesh.meshsize(1)))
+    wshape = (K//(mesh.meshsize(0)), N//mesh.meshsize(1))
+    allgather_i = mesh.estimateCollective(bytecount(ishape, precisions[0]), 1, 'allgather')
+    allgather_w = mesh.estimateCollective(bytecount(wshape, precisions[1]), 0, 'allgather')
+    compute = estimateMatmul(ishape[0], wshape[1], K)
+    
+    return {
+        'prologue':max(allgather_i, allgather_w),
+        'gputime': compute,
+        'overlap': compute,
+        'epilogue': 0.0
+    }
+
+def GSPMD_IS(mesh:Torus3D, M, N, K, steps=8, precisions=(16,16,16)):
+    ishape = (M//mesh.meshsize(0), K//(mesh.meshsize(1)))
+    wshape = (N//(mesh.meshsize(0)), K//mesh.meshsize(1))
+    oshape = (M//(mesh.meshsize(0)), N//mesh.meshsize(1))
+    
+    allgather_w = mesh.estimateCollective(bytecount(wshape, precisions[1]), 0, 'allgather')
+
+    compute = estimateMatmul(ishape[0], N, ishape[1])
+    reducescatter_o = mesh.estimateCollective(bytecount(oshape, precisions[2]), 1, 'reducescatter')
+    
+    return {
+        'prologue':allgather_w,
+        'gputime': compute,
+        'overlap': compute,
+        'epilogue': reducescatter_o
+    }
+
+def GSPMD_WS(mesh:Torus3D, M, N, K, steps=8, precisions=(16,16,16)):
+    ishape = (K//mesh.meshsize(0), M//(mesh.meshsize(1)))
+    wshape = (K//(mesh.meshsize(0)), N//mesh.meshsize(1))
+    oshape = (M//(mesh.meshsize(0)), N//mesh.meshsize(1))
+    
+    allgather_i = mesh.estimateCollective(bytecount(ishape, precisions[0]), 1, 'allgather')
+
+    compute = estimateMatmul(M, wshape[1], ishape[0])
+    reducescatter_o = mesh.estimateCollective(bytecount(oshape, precisions[2]), 0, 'reducescatter')
+
+    return {
+        'prologue':allgather_i,
+        'gputime': compute,
+        'overlap': compute,
+        'epilogue': reducescatter_o
+    }
+
+def Systolic_OS(mesh:Torus3D, M, N, K, steps=8, precisions=(16,16,16)): #assume synchronized allgather
+
+    ishape = (M//mesh.meshsize(0), K//mesh.meshsize(1)//steps)
+    wshape = (K//mesh.meshsize(0)//steps, N//mesh.meshsize(1))
+    allgather_i = mesh.estimateCollective(bytecount(ishape, precisions[0]), 1, 'allgather')
+    allgather_w = mesh.estimateCollective(bytecount(wshape, precisions[1]), 0, 'allgather')
+    compute = estimateMatmul(ishape[0], wshape[1], K//steps)
+    
+    return {
+        'prologue':max(allgather_i, allgather_w),
+        'gputime': compute,
+        'overlap': max(allgather_i, allgather_w, compute) * (steps-1) + compute,
+        'epilogue': 0.0
+    }
+    
+
+def Systolic_IS(mesh:Torus3D, M, N, K, steps=8, precisions=(16,16,16)): #assume synchronized allgather
+    
+    ishape = (M//mesh.meshsize(0), K//mesh.meshsize(1))
+    wshape = (N//mesh.meshsize(0)//steps, K//mesh.meshsize(1))
+    oshape = (M//mesh.meshsize(0), N//mesh.meshsize(1)//steps)
+
+    allgather_w = mesh.estimateCollective(bytecount(wshape, precisions[1]), 0, 'allgather')
+
+    reducescatter_o = mesh.estimateCollective(bytecount(oshape, precisions[2]), 1, 'reducescatter')
+    compute = estimateMatmul(ishape[0], N//steps, ishape[1])
+    
+    return {
+        'prologue':allgather_w,
+        'gputime': compute,
+        'overlap': compute + max(allgather_w, reducescatter_o, compute) * (steps-1),
+        'epilogue': reducescatter_o
+    }
+    
+    
+def Systolic_WS(mesh:Torus3D, M, N, K, steps=32, precisions=(16,16,16)): #assume synchronized allgather
+
+    ishape = (K//mesh.meshsize(0), M//mesh.meshsize(1)//steps)
+    wshape = (K//mesh.meshsize(0), N//mesh.meshsize(1))
+    oshape = (M//mesh.meshsize(0)//steps, N//mesh.meshsize(1))
+    allgather_i = mesh.estimateCollective(bytecount(ishape, precisions[0]), 1, 'allgather')
+
+    compute = estimateMatmul(M//steps, oshape[1], ishape[0])
+    reducescatter_o = mesh.estimateCollective(bytecount(oshape, precisions[2]), 0, 'reducescatter')
+
+    return {
+        'prologue':allgather_i,
+        'gputime': compute,
+        'overlap': compute + max(allgather_i, reducescatter_o, compute) * (steps-1),
+        'epilogue': reducescatter_o
+    }
+    
+def addResult(total, result, overlap=None):
+    for key in result:
+        total[key] = total[key] + result[key]
+    return total
+def emulate2DForward(mesh: Torus3D, bsize, seqlen, nheads, headdim, algorithm='gspmd', steps=8):
+
+    if algorithm == 'SUMMA':
+        funcs = {'OS':SUMMA_OS, 'IS':SUMMA_IS, 'WS':SUMMA_WS}
+    elif algorithm == 'GSPMD':
+        funcs = {'OS':GSPMD_OS, 'IS':GSPMD_IS, 'WS':GSPMD_WS}
+    else:
+        funcs = {'OS':Systolic_OS, 'IS':Systolic_IS, 'WS':Systolic_WS}
+    #H -> 3H
+    colsize = mesh.meshsize(0)
+    rowsize = mesh.meshsize(1)
+    inproj = funcs['OS'](mesh, bsize*seqlen, 3*nheads*headdim, nheads*headdim,steps=steps)
+    att = estimateAttention(seqlen, bsize//colsize, nheads//rowsize, headdim)
+    outproj = funcs['IS'](mesh, bsize*seqlen, nheads*headdim, nheads*headdim,steps=steps)
+    addnorm1 = estimateAddNorm(seqlen, bsize//colsize, nheads*headdim//rowsize)
+    ff1 = funcs['OS'](mesh, bsize*seqlen, 4*nheads*headdim, nheads*headdim,steps=steps)
+    ff2 = funcs['IS'](mesh, bsize*seqlen, nheads*headdim, 4*nheads*headdim,steps=steps)
+    addnorm2 = estimateAddNorm(seqlen, bsize//colsize, nheads*headdim//rowsize)
+    total = {'prologue':0, 'gputime': 0, 'overlap': 0, 'epilogue': 0}
+    addResult(total, inproj)
+    addResult(total, att)
+    addResult(total, outproj)
+    addResult(total, addnorm1)
+    addResult(total, ff1)
+    addResult(total, ff2)
+    addResult(total, addnorm2)
+    return total
+
 
 
 if __name__ == '__main__':
@@ -170,5 +438,11 @@ if __name__ == '__main__':
     estimateBWTime(dsize, 'allgather')
     print(cluster.estimateCollective(dsize, 1, 'allgather')*1000)
     print(cluster.estimateCollective(wsize, 0, 'allgather')*1000)
+    from torch.profiler import profile, record_function, ProfilerActivity
+    with profile(activities=[ProfilerActivity.CUDA],record_shapes=True, with_flops=True) as prof:
+        myres = emulate2DForward(cluster, 1024, 2048, 96, 128, 'GSPMD')
+        print(myres)
+    print(prof.key_averages().table(sort_by="cuda_time_total",row_limit=10))
+ 
 
 
