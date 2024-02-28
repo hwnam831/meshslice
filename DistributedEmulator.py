@@ -105,6 +105,8 @@ def estimateBWTime(bytes, algorithm):
         doubletime = timetable[29]
         basesize = 1<<28
         return (basetime + (bytes-basesize)*(doubletime - basetime) / basesize)*1e-6
+    elif bitcount < 12:
+        return timetable[12]*1e-6
     basetime = timetable[bitcount]
     doubletime = timetable[bitcount+1]
     basesize = 1<<bitcount
@@ -138,13 +140,13 @@ class Torus3D:
             rowsize = self.shape[rowdim]
             halfsize = datasize // 2
             if algorithm in ['allgather', 'reducescatter', 'allreduce']:
-                phase1col = estimateBWTime(halfsize, algorithm)*(colsize-1) + \
+                phase1col = estimateBWTime(halfsize*(colsize-1), algorithm) + \
                             self.link_latency[coldim] * (colsize-1)
-                phase1row = estimateBWTime(halfsize, algorithm)*(rowsize-1) + \
+                phase1row = estimateBWTime(halfsize*(rowsize-1), algorithm) + \
                             self.link_latency[rowdim] * (rowsize-1)
-                phase2col = estimateBWTime(halfsize*rowsize, algorithm)*(colsize-1) + \
+                phase2col = estimateBWTime(halfsize*rowsize*(colsize-1), algorithm) + \
                             self.link_latency[coldim] * (colsize-1)
-                phase2row = estimateBWTime(halfsize*colsize, algorithm)*(rowsize-1) + \
+                phase2row = estimateBWTime(halfsize*colsize*(rowsize-1), algorithm) + \
                             self.link_latency[rowdim] * (rowsize-1)
                 return self.base_overhead*2 + max(phase1col+phase2row, phase1row+phase2col)
             else: #bcast or reduce
@@ -159,7 +161,7 @@ class Torus3D:
                 traffic = datasize
             return self.base_overhead + estimateBWTime(traffic, algorithm) + self.link_latency[mydim] * (mysize-1)
 
-def estimateMatmul(M, N, K, input_precision=torch.float16, repeat=10):
+def estimateMatmul(M, N, K, input_precision=torch.float16, warmup=5, repeat=20):
     #flop_count = M*N*K*2
     #return flop_count/mesh.flops
     
@@ -167,6 +169,8 @@ def estimateMatmul(M, N, K, input_precision=torch.float16, repeat=10):
     B = torch.zeros(K,N).to(device='cuda',dtype=input_precision)
     #C = torch.zeros(M,N).to(device='cuda',dtype=output_precision)
     C = torch.mm(A,B)
+    for _ in range(warmup):
+        torch.mm(A,B, out=C)
     torch.cuda.synchronize()
 
     start_event = torch.cuda.Event(enable_timing=True)
@@ -252,7 +256,7 @@ def SUMMA_OS(mesh:Torus3D, M, N, K, steps=8, precisions=(16,16,16)):
 
     return {
         'prologue':max(broadcast_i, broadcast_w),
-        'gputime': compute,
+        'gputime': compute*steps,
         'overlap': max(broadcast_i, broadcast_w, compute) * (steps-1) + compute,
         'epilogue': 0.0
     }
@@ -270,7 +274,7 @@ def SUMMA_IS(mesh:Torus3D, M, N, K, steps=8, precisions=(16,16,16)):
 
     return {
         'prologue':broadcast_w,
-        'gputime': compute,
+        'gputime': compute*steps,
         'overlap': max(reduce_o, broadcast_w, compute) * (steps-1) + compute,
         'epilogue': reduce_o
     }
@@ -288,7 +292,7 @@ def SUMMA_WS(mesh:Torus3D, M, N, K, steps=8, precisions=(16,16,16)):
 
     return {
         'prologue':broadcast_i,
-        'gputime': compute,
+        'gputime': compute*steps,
         'overlap': max(reduce_o, broadcast_i, compute) * (steps-1) + compute,
         'epilogue': reduce_o
     }
@@ -354,7 +358,7 @@ def Systolic_OS(mesh:Torus3D, M, N, K, steps=8, precisions=(16,16,16)): #assume 
     
     return {
         'prologue':max(allgather_i, allgather_w),
-        'gputime': compute,
+        'gputime': compute*steps,
         'overlap': max(allgather_i, allgather_w, compute) * (steps-1) + compute,
         'epilogue': 0.0
     }
@@ -373,7 +377,7 @@ def Systolic_IS(mesh:Torus3D, M, N, K, steps=8, precisions=(16,16,16)): #assume 
     
     return {
         'prologue':allgather_w,
-        'gputime': compute,
+        'gputime': compute*steps,
         'overlap': compute + max(allgather_w, reducescatter_o, compute) * (steps-1),
         'epilogue': reducescatter_o
     }
@@ -391,7 +395,7 @@ def Systolic_WS(mesh:Torus3D, M, N, K, steps=32, precisions=(16,16,16)): #assume
 
     return {
         'prologue':allgather_i,
-        'gputime': compute,
+        'gputime': compute*steps,
         'overlap': compute + max(allgather_i, reducescatter_o, compute) * (steps-1),
         'epilogue': reducescatter_o
     }
@@ -413,7 +417,7 @@ def emulate2DForward(mesh: Torus3D, bsize, seqlen, nheads, headdim, algorithm='g
     rowsize = mesh.meshsize(1)
     inproj = funcs['OS'](mesh, bsize*seqlen, 3*nheads*headdim, nheads*headdim,steps=steps)
     att = estimateAttention(seqlen, bsize//colsize, nheads//rowsize, headdim)
-    outproj = funcs['IS'](mesh, bsize*seqlen, nheads*headdim, nheads*headdim,steps=steps)
+    outproj = funcs['OS'](mesh, bsize*seqlen, nheads*headdim, nheads*headdim,steps=steps)
     addnorm1 = estimateAddNorm(seqlen, bsize//colsize, nheads*headdim//rowsize)
     ff1 = funcs['OS'](mesh, bsize*seqlen, 4*nheads*headdim, nheads*headdim,steps=steps)
     ff2 = funcs['IS'](mesh, bsize*seqlen, nheads*headdim, 4*nheads*headdim,steps=steps)
@@ -428,21 +432,169 @@ def emulate2DForward(mesh: Torus3D, bsize, seqlen, nheads, headdim, algorithm='g
     addResult(total, addnorm2)
     return total
 
+def emulate2DBackward(mesh: Torus3D, bsize, seqlen, nheads, headdim, algorithm='gspmd', steps=8):
+
+    if algorithm == 'SUMMA':
+        funcs = {'OS':SUMMA_OS, 'IS':SUMMA_IS, 'WS':SUMMA_WS}
+    elif algorithm == 'GSPMD':
+        funcs = {'OS':GSPMD_OS, 'IS':GSPMD_IS, 'WS':GSPMD_WS}
+    else:
+        funcs = {'OS':Systolic_OS, 'IS':Systolic_IS, 'WS':Systolic_WS}
+    #H -> 3H
+    colsize = mesh.meshsize(0)
+    rowsize = mesh.meshsize(1)
+    addnorm2 = estimateAddNorm(seqlen, bsize//colsize, nheads*headdim//rowsize)
+    ff2_bd = funcs['OS'](mesh, bsize*seqlen, 4*nheads*headdim, nheads*headdim,steps=steps)
+    ff2_bw = funcs['WS'](mesh, nheads*headdim, 4*nheads*headdim, bsize*seqlen, steps=steps)
+
+
+    ff1_bd = funcs['IS'](mesh, bsize*seqlen, nheads*headdim, 4*nheads*headdim, steps=steps)
+    ff1_bw = funcs['WS'](mesh, nheads*headdim, 4*nheads*headdim, bsize*seqlen, steps=steps)
+
+    addnorm1 = estimateAddNorm(seqlen, bsize//colsize, nheads*headdim//rowsize)
+
+    outproj_bd = funcs['OS'](mesh, bsize*seqlen, nheads*headdim, nheads*headdim,steps=steps)
+    outproj_bw = funcs['WS'](mesh, nheads*headdim, nheads*headdim, bsize*seqlen, steps=steps)
+
+    att_b1 = estimateAttention(seqlen, bsize//colsize, nheads//rowsize, headdim)
+    att_b2 = estimateAttention(seqlen, bsize//colsize, nheads//rowsize, headdim)
+
+    inproj_bd = funcs['IS'](mesh, bsize*seqlen, nheads*headdim, 3*nheads*headdim, steps=steps)
+    inproj_bw = funcs['WS'](mesh, nheads*headdim, 3*nheads*headdim, bsize*seqlen, steps=steps)
+    
+    
+    
+    
+
+    
+    total = {'prologue':0, 'gputime': 0, 'overlap': 0, 'epilogue': 0}
+    addResult(total, inproj_bd)
+    addResult(total, inproj_bw)
+    addResult(total, att_b1)
+    addResult(total, att_b2)
+    addResult(total, outproj_bd)
+    addResult(total, outproj_bw)
+    addResult(total, addnorm1)
+    addResult(total, ff1_bd)
+    addResult(total, ff1_bw)
+    addResult(total, ff2_bd)
+    addResult(total, ff2_bw)
+    addResult(total, addnorm2)
+    return total
+
+def emulateCluster(cluster:Torus3D, algorithm, seqlen, nheads, headdim, steps=8):
+    bsize = cluster.meshsize(0)*cluster.meshsize(1)//4
+    fwd = emulate2DForward(cluster, bsize, seqlen, nheads, headdim, algorithm, steps=steps)
+    total = emulate2DBackward(cluster, bsize, seqlen, nheads, headdim, algorithm, steps=steps)
+    addResult(total, fwd)
+    addResult(total, fwd)
+    gputime = total['gputime']
+    commtime = total['prologue'] + total['epilogue'] + total['overlap'] - gputime
+    print("#nodes:,{}, ffdim:{}, algorithm {}, gputime(ms):,{}, commtime(ms):, {} ".format(bsize*4, nheads*headdim ,algorithm, gputime*1000, commtime*1000))
+
 
 
 if __name__ == '__main__':
-    cluster = Torus3D((8,16,32), 44*1e9, (3e-6, 6e-6, 9e-6), 9e-6)
-    cluster.permutation = ((1,2),0)
+    cluster = Torus3D((8,16,32), 44*1e9, (3e-6, 3e-6, 3e-6), 9e-6)
+    cluster.permutation = ((2,1),0)
     dsize = 1024*96*128 * 2
     wsize = 96*128*96*128*4*2//(16*32*8)
     estimateBWTime(dsize, 'allgather')
-    print(cluster.estimateCollective(dsize, 1, 'allgather')*1000)
-    print(cluster.estimateCollective(wsize, 0, 'allgather')*1000)
+    #print(cluster.estimateCollective(dsize, 1, 'allgather')*1000)
+    #print(cluster.estimateCollective(wsize, 0, 'allgather')*1000)
     from torch.profiler import profile, record_function, ProfilerActivity
-    with profile(activities=[ProfilerActivity.CUDA],record_shapes=True, with_flops=True) as prof:
-        myres = emulate2DForward(cluster, 1024, 2048, 96, 128, 'GSPMD')
-        print(myres)
-    print(prof.key_averages().table(sort_by="cuda_time_total",row_limit=10))
- 
+    #with profile(activities=[ProfilerActivity.CUDA],record_shapes=True, with_flops=True) as prof:
+    #    myres = emulate2DForward(cluster, 1024, 2048, 96, 128, 'GSPMD')
+    #    print(myres)
+    #print(prof.key_averages().table(sort_by="cuda_time_total",row_limit=10))
+    #myres = emulate2DForward(cluster, 1024, 2048, 96, 128, 'ours', steps=8)
+    #myres = emulate2DForward(cluster, 1024, 2048, 96, 128, 'GSPMD')
+    #print(myres)
+   
+    #myres = emulate2DForward(cluster, 1024, 2048, 96, 128, 'ours', steps=8)
+    #print(myres)
 
+    #myres = emulate2DBackward(cluster, 1024, 2048, 96, 128, 'ours', steps=8)
+    #myres = emulate2DBackward(cluster, 1024, 2048, 96, 128, 'GSPMD')
+    #print(myres)
+   
+    #myres = emulate2DBackward(cluster, 1024, 2048, 96, 128, 'ours', steps=8)
+    #print(myres)
+   
+    emulateCluster(cluster, 'GSPMD', 2048, 96, 128)
+    emulateCluster(cluster, 'Ours', 2048, 96, 128)
+    cluster.permutation = ((2,0),1)
+    emulateCluster(cluster, 'SUMMA', 2048, 96, 128)
+
+    cluster = Torus3D((8,16,16), 44*1e9, (3e-6, 3e-6, 3e-6), 9e-6)
+    cluster.permutation = ((2,1),0)
+
+    emulateCluster(cluster, 'GSPMD', 2048, 96, 128)
+    emulateCluster(cluster, 'Ours', 2048, 96, 128)
+    cluster.permutation = ((2,0),1)
+    emulateCluster(cluster, 'SUMMA', 2048, 96, 128)
+
+    cluster = Torus3D((8,16,8), 44*1e9, (3e-6, 3e-6, 3e-6), 9e-6)
+    cluster.permutation = ((2,1),0)
+
+    emulateCluster(cluster, 'GSPMD', 2048, 96, 128)
+    emulateCluster(cluster, 'Ours', 2048, 96, 128)
+    cluster.permutation = ((2,0),1)
+    emulateCluster(cluster, 'SUMMA', 2048, 96, 128)
+
+    cluster = Torus3D((8,16,4), 44*1e9, (3e-6, 3e-6, 3e-6), 9e-6)
+    cluster.permutation = ((2,1),0)
+
+    emulateCluster(cluster, 'GSPMD', 2048, 96, 128)
+    emulateCluster(cluster, 'Ours', 2048, 96, 128)
+    cluster.permutation = ((2,0),1)
+    emulateCluster(cluster, 'SUMMA', 2048, 96, 128)
+
+    cluster = Torus3D((8,8,4), 44*1e9, (3e-6, 3e-6, 3e-6), 9e-6)
+    cluster.permutation = ((2,1),0)
+
+    emulateCluster(cluster, 'GSPMD', 2048, 96, 128)
+    emulateCluster(cluster, 'Ours', 2048, 96, 128)
+    emulateCluster(cluster, 'SUMMA', 2048, 96, 128)
+
+
+
+    cluster = Torus3D((8,16,32), 44*1e9, (3e-6, 3e-6, 3e-6), 9e-6)
+    cluster.permutation = ((2,1),0)
+
+    emulateCluster(cluster, 'GSPMD', 2048, 160, 128)
+    emulateCluster(cluster, 'Ours', 2048, 160, 128)
+    cluster.permutation = ((2,0),1)
+    emulateCluster(cluster, 'SUMMA', 2048, 160, 128)
+
+    cluster = Torus3D((8,16,16), 44*1e9, (3e-6, 3e-6, 3e-6), 9e-6)
+    cluster.permutation = ((2,1),0)
+
+    emulateCluster(cluster, 'GSPMD', 2048, 160, 128)
+    emulateCluster(cluster, 'Ours', 2048, 160, 128)
+    cluster.permutation = ((2,0),1)
+    emulateCluster(cluster, 'SUMMA', 2048, 160, 128)
+
+    cluster = Torus3D((8,16,8), 44*1e9, (3e-6, 3e-6, 3e-6), 9e-6)
+    cluster.permutation = ((2,1),0)
+
+    emulateCluster(cluster, 'GSPMD', 2048, 160, 128)
+    emulateCluster(cluster, 'Ours', 2048, 160, 128)
+    cluster.permutation = ((2,0),1)
+    emulateCluster(cluster, 'SUMMA', 2048, 160, 128)
+
+    cluster = Torus3D((8,16,4), 44*1e9, (3e-6, 3e-6, 3e-6), 9e-6)
+    cluster.permutation = ((2,1),0)
+
+    emulateCluster(cluster, 'GSPMD', 2048, 160, 128)
+    emulateCluster(cluster, 'Ours', 2048, 160, 128)
+    cluster.permutation = ((2,0),1)
+    emulateCluster(cluster, 'SUMMA', 2048, 160, 128)
+
+    cluster = Torus3D((8,8,4), 44*1e9, (3e-6, 3e-6, 3e-6), 9e-6)
+    cluster.permutation = ((2,1),0)
+
+    emulateCluster(cluster, 'GSPMD', 2048, 160, 128)
+    emulateCluster(cluster, 'Ours', 2048, 160, 128)
+    emulateCluster(cluster, 'SUMMA', 2048, 160, 128)
 
