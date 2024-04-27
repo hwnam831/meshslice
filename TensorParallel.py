@@ -230,6 +230,7 @@ class SPMD:
 
 
 if __name__=='__main__':
+    jax.config.update('jax_platform_name', 'cpu')
     os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count=8' # Use 8 CPU devices
     devices = mesh_utils.create_device_mesh((4, 2))
     mesh = Mesh(devices, axis_names=('x', 'y'))

@@ -1,19 +1,23 @@
 #!/bin/bash
-#SBATCH --job-name=mutihost-jax-cpu
-#SBATCH --partition=cpu
-#SBATCH --time=72:00:00
+#SBATCH --account=bcku-delta-gpu
+#SBATCH --job-name=mutihost-jax-gpu
+#SBATCH --partition=gpuA100x4
+#SBATCH --time=00:20:00
 
-#SBATCH --nodes=4
-#SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=8
+#SBATCH --nodes=2
+#SBATCH --ntasks-per-node=2
+#SBATCH --cpus-per-task=16
+#SBATCH --gpus-per-task=1
 #SBATCH --mem=16gb
-#SBATCH --chdir=/scratch/shared/beegfs/your_dir/
-#SBATCH --output=/scratch/shared/beegfs/your_dir/%x-%j.out
+#SBATCH --chdir=/u/hwnam831/systolicparallelism/
+#SBATCH --output=/u/hwnam831/logoutputs/%x-%j.out
+
+
 
 ### change 5-digit MASTER_PORT as you wish, slurm will raise Error if duplicated with others
 ### change WORLD_SIZE as gpus/node * num_nodes
-export MASTER_PORT=16130
-export WORLD_SIZE=4
+export MASTER_PORT=16137
+export WORLD_SIZE=$SLURM_NNODES
 export MY_NODE_ID=$SLURM_NODEID
 echo "my node id="$MY_NODE_ID
 
@@ -25,9 +29,8 @@ export MASTER_ADDR=$master_addr
 echo "MASTER_ADDR="$MASTER_ADDR
 
 ### init virtual environment if needed
-source ~/anaconda3/etc/profile.d/conda.sh
-conda activate myenv
+module load anaconda3_gpu
 
 ### the command to run
-srun python main.py --net resnet18 \
---lr 1e-3 --epochs 50 --other_args
+srun python Multihost.py
+exit
