@@ -5,7 +5,7 @@
 - Mesh tuning results (Done)
 - Unbalanced bw (done)
 - SUMMA, ours, Wang in 8 cpus (done)
-- implement them for multi-host cpu
+- implement them for multi-host cpu (error. do for TRC)
 - Comm cost model generator (Test in GPUs first)
 - cost model + autotuner (Test in GPUs first)
 - Evaluation code for multi-chip (Debug in CPUs first)
