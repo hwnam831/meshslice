@@ -95,7 +95,7 @@ def estimateMatmul(mesh, M, N, K, input_precision=jnp.bfloat16, layout='nn', rep
     endtime = time.time()
     
     
-    return (starttime-endtime)/repeat
+    return (endtime-starttime)/repeat
     
 #def estimateMatmul(mesh, M, N, K, input_precision=jnp.bfloat16, output_precision=jnp.float32, repeat=10):
 #    flop_count = M*N*K*2

@@ -36,43 +36,43 @@ class FFLayerModel:
     def totalTrafficTime(self, mesh:DeviceMesh):
         
         if self.dataflow == 'os':
-            input_traffic = 2*self.bsize*self.in_dim*mesh.shape[1]
-            weight_traffic = 2*self.in_dim*self.out_dim*mesh.shape[0]
+            input_traffic = 2*self.bsize*self.in_dim*(mesh.shape[1]-1)
+            weight_traffic = 2*self.in_dim*self.out_dim*(mesh.shape[0]-1)
             if self.transpose:
-                input_traffic = 2*self.bsize*self.in_dim*mesh.shape[0]
-                weight_traffic = 2*self.in_dim*self.out_dim*mesh.shape[1]
+                input_traffic = 2*self.bsize*self.in_dim*(mesh.shape[0]-1)
+                weight_traffic = 2*self.in_dim*self.out_dim*(mesh.shape[1]-1)
             fwtime = max(input_traffic/mesh.bws['allgather'], weight_traffic/mesh.bws['allgather'])
             bdtime = max(input_traffic/mesh.bws['reducescatter'], weight_traffic/mesh.bws['allgather'])
             bwtime = max(input_traffic/mesh.bws['allgather'], weight_traffic/mesh.bws['reducescatter'])
-            return (fwtime + bdtime + bwtime)/(mesh.shape[0]*mesh.shape[1])
+            return (fwtime + bdtime + bwtime)/(mesh.shape[0]*mesh.shape[1])/2 #bidirectional
         elif self.dataflow == 'is':
-            output_traffic = 2*self.bsize*self.out_dim*mesh.shape[1]
-            weight_traffic = 2*self.in_dim*self.out_dim*mesh.shape[0]
+            output_traffic = 2*self.bsize*self.out_dim*(mesh.shape[1]-1)
+            weight_traffic = 2*self.in_dim*self.out_dim*(mesh.shape[0]-1)
             if self.transpose:
-                output_traffic = 2*self.bsize*self.out_dim*mesh.shape[0]
-                weight_traffic = 2*self.in_dim*self.out_dim*mesh.shape[1]
+                output_traffic = 2*self.bsize*self.out_dim*(mesh.shape[0]-1)
+                weight_traffic = 2*self.in_dim*self.out_dim*(mesh.shape[1]-1)
             fwtime = max(weight_traffic/mesh.bws['allgather'], output_traffic/mesh.bws['reducescatter'])
             bdtime = max(weight_traffic/mesh.bws['allgather'], output_traffic/mesh.bws['allgather'])
             bwtime = max(weight_traffic/mesh.bws['reducescatter'], output_traffic/mesh.bws['allgather'])
-            return (fwtime + bdtime + bwtime)/(mesh.shape[0]*mesh.shape[1])
+            return (fwtime + bdtime + bwtime)/(mesh.shape[0]*mesh.shape[1])/2 #bidirectional
         else: #ws
-            input_traffic = 2*self.bsize*self.in_dim*mesh.shape[1]
-            output_traffic = 2*self.bsize*self.out_dim*mesh.shape[0]
+            input_traffic = 2*self.bsize*self.in_dim*(mesh.shape[1]-1)
+            output_traffic = 2*self.bsize*self.out_dim*(mesh.shape[0]-1)
             if self.transpose:
-                input_traffic = 2*self.bsize*self.in_dim*mesh.shape[0]
-                output_traffic = 2*self.bsize*self.out_dim*mesh.shape[1]
+                input_traffic = 2*self.bsize*self.in_dim*(mesh.shape[0]-1)
+                output_traffic = 2*self.bsize*self.out_dim*(mesh.shape[1]-1)
             fwtime = max(input_traffic/mesh.bws['allgather'], output_traffic/mesh.bws['reducescatter'])
             bdtime = max(input_traffic/mesh.bws['reducescatter'], output_traffic/mesh.bws['allgather'])
             bwtime = max(input_traffic/mesh.bws['allgather'], output_traffic/mesh.bws['allgather'])
-            return (fwtime + bdtime + bwtime)/(mesh.shape[0]*mesh.shape[1])
+            return (fwtime + bdtime + bwtime)/(mesh.shape[0]*mesh.shape[1])/2 #bidirectional
     def totalLatency(self, mesh:DeviceMesh, K):
         
         if self.dataflow == 'os':
-            dist_i = mesh.shape[1]
-            dist_w = mesh.shape[0]
+            dist_i = mesh.shape[1]-1
+            dist_w = (mesh.shape[0]-1)
             if self.transpose:
-                dist_i = mesh.shape[0]
-                dist_w = mesh.shape[1]
+                dist_i = (mesh.shape[0]-1)
+                dist_w = mesh.shape[1]-1
             fwtime = K*max(dist_i*mesh.link_latencies['allgather'] + mesh.base_overheads['allgather'], 
                            dist_w*mesh.link_latencies['allgather'] + mesh.base_overheads['allgather'])
             bdtime = K*max(dist_i*mesh.link_latencies['reducescatter'] + mesh.base_overheads['reducescatter'],
@@ -81,11 +81,11 @@ class FFLayerModel:
                            dist_w*mesh.link_latencies['reducescatter'] + mesh.base_overheads['reducescatter'])
             return (fwtime + bdtime + bwtime)
         elif self.dataflow == 'is':
-            dist_o = mesh.shape[1]
-            dist_w = mesh.shape[0]
+            dist_o = mesh.shape[1]-1
+            dist_w = mesh.shape[0]-1
             if self.transpose:
-                dist_o = mesh.shape[0]
-                dist_w = mesh.shape[1]
+                dist_o = mesh.shape[0]-1
+                dist_w = mesh.shape[1]-1
             fwtime = K*max(dist_w*mesh.link_latencies['allgather'] + mesh.base_overheads['allgather'], 
                            dist_o*mesh.link_latencies['reducescatter'] + mesh.base_overheads['reducescatter'])
             bdtime = K*max(dist_o*mesh.link_latencies['allgather'] + mesh.base_overheads['allgather'],
@@ -94,11 +94,11 @@ class FFLayerModel:
                            dist_w*mesh.link_latencies['reducescatter'] + mesh.base_overheads['reducescatter'])
             return (fwtime + bdtime + bwtime)
         else: #ws
-            dist_i = mesh.shape[1]
-            dist_o = mesh.shape[0]
+            dist_i = mesh.shape[1]-1
+            dist_o = mesh.shape[0]-1
             if self.transpose:
-                dist_i = mesh.shape[0]
-                dist_o = mesh.shape[1]
+                dist_i = mesh.shape[0]-1
+                dist_o = mesh.shape[1]-1
             fwtime = K*max(dist_i*mesh.link_latencies['allgather'] + mesh.base_overheads['allgather'], 
                            dist_o*mesh.link_latencies['reducescatter'] + mesh.base_overheads['reducescatter'])
             bdtime = K*max(dist_o*mesh.link_latencies['allgather'] + mesh.base_overheads['allgather'],
@@ -109,35 +109,35 @@ class FFLayerModel:
     def pipelineOverhead(self, mesh:DeviceMesh, K):
         
         if self.dataflow == 'os':
-            input_traffic = 2*self.bsize*self.in_dim*mesh.shape[1]
-            weight_traffic = 2*self.in_dim*self.out_dim*mesh.shape[0]
+            input_traffic = 2*self.bsize*self.in_dim*(mesh.shape[1]-1)
+            weight_traffic = 2*self.in_dim*self.out_dim*(mesh.shape[0]-1)
             if self.transpose:
-                input_traffic = 2*self.bsize*self.in_dim*mesh.shape[0]
-                weight_traffic = 2*self.in_dim*self.out_dim*mesh.shape[1]
+                input_traffic = 2*self.bsize*self.in_dim*(mesh.shape[0]-1)
+                weight_traffic = 2*self.in_dim*self.out_dim*(mesh.shape[1]-1)
             fwtime = max(input_traffic/mesh.bws['allgather'], weight_traffic/mesh.bws['allgather'])
             bdtime = (input_traffic/mesh.bws['reducescatter']+ weight_traffic/mesh.bws['allgather'])
             bwtime = (input_traffic/mesh.bws['allgather']+ weight_traffic/mesh.bws['reducescatter'])
-            return (fwtime + bdtime + bwtime)/(mesh.shape[0]*mesh.shape[1])/K
+            return (fwtime + bdtime + bwtime)/(mesh.shape[0]*mesh.shape[1])/K/2 #bidirectional
         elif self.dataflow == 'is':
-            output_traffic = 2*self.bsize*self.out_dim*mesh.shape[1]
-            weight_traffic = 2*self.in_dim*self.out_dim*mesh.shape[0]
+            output_traffic = 2*self.bsize*self.out_dim*(mesh.shape[1]-1)
+            weight_traffic = 2*self.in_dim*self.out_dim*(mesh.shape[0]-1)
             if self.transpose:
-                output_traffic = 2*self.bsize*self.out_dim*mesh.shape[0]
-                weight_traffic = 2*self.in_dim*self.out_dim*mesh.shape[1]
+                output_traffic = 2*self.bsize*self.out_dim*(mesh.shape[0]-1)
+                weight_traffic = 2*self.in_dim*self.out_dim*(mesh.shape[1]-1)
             fwtime = (weight_traffic/mesh.bws['allgather'] + output_traffic/mesh.bws['reducescatter'])
             bdtime = max(weight_traffic/mesh.bws['allgather'], output_traffic/mesh.bws['allgather'])
             bwtime = (weight_traffic/mesh.bws['reducescatter'] + output_traffic/mesh.bws['allgather'])
-            return (fwtime + bdtime + bwtime)/(mesh.shape[0]*mesh.shape[1])/K
+            return (fwtime + bdtime + bwtime)/(mesh.shape[0]*mesh.shape[1])/K/2 #bidirectional
         else: #ws
-            input_traffic = 2*self.bsize*self.in_dim*mesh.shape[1]
-            output_traffic = 2*self.bsize*self.out_dim*mesh.shape[0]
+            input_traffic = 2*self.bsize*self.in_dim*(mesh.shape[1]-1)
+            output_traffic = 2*self.bsize*self.out_dim*(mesh.shape[0]-1)
             if self.transpose:
-                input_traffic = 2*self.bsize*self.in_dim*mesh.shape[0]
-                output_traffic = 2*self.bsize*self.out_dim*mesh.shape[1]
+                input_traffic = 2*self.bsize*self.in_dim*(mesh.shape[0]-1)
+                output_traffic = 2*self.bsize*self.out_dim*(mesh.shape[1]-1)
             fwtime = (input_traffic/mesh.bws['allgather'] + output_traffic/mesh.bws['reducescatter'])
             bdtime = (input_traffic/mesh.bws['reducescatter'] + output_traffic/mesh.bws['allgather'])
             bwtime = max(input_traffic/mesh.bws['allgather'], output_traffic/mesh.bws['allgather'])
-            return (fwtime + bdtime + bwtime)/(mesh.shape[0]*mesh.shape[1])/K
+            return (fwtime + bdtime + bwtime)/(mesh.shape[0]*mesh.shape[1])/K/2 #bidirectional
     def emulate(self, mesh:DeviceMesh, K):
         if not self.transpose:
             if self.dataflow == 'os':
@@ -377,16 +377,17 @@ def autotuneTransformer(graph:ComputeGraph, shapes):
 
 
 if __name__ == '__main__':
-    B=256
+    B=64
     S=2048
-    H=192
+    H=128
     D=128
+    K=8
     gpt3 = TransformerBlock(B,S,H,D)
     gpt3.printGraph()
     computetime = 0
-    computetime += 3* CostModel.estimateMatmul(None,B*S,H*D,H*D)
-    computetime += 3* CostModel.estimateMatmul(None,B*S,H*D,3*H*D)
-    computetime += 6* CostModel.estimateMatmul(None,B*S,H*D,4*H*D)
+    computetime += 3* CostModel.estimateMatmul(None,B*S//32,H*D//8,H*D//K)*K
+    computetime += 3* CostModel.estimateMatmul(None,B*S//32,3*H*D//8,H*D//K)*K
+    computetime += 6* CostModel.estimateMatmul(None,B*S//32,4*H*D//8,H*D//K)*K
     print("Emulated compute time: {}".format(computetime*1000))
     #shapes = [(4,96), (8,48), (12,32), (16,24), (24,16), (32,12), (48,8), (96,4)]
     shapes = [(4,64), (8,32), (16,16), (32,8), (64,4)]
