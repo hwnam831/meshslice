@@ -143,58 +143,7 @@ def Wang_WS(Xji, Wij, row, col, K, B):
         Yj = jax.lax.fori_loop(1,size,mybody,init_val=(x_lo,x_hi,Yj))[2]
         return jax.lax.psum_scatter(Yj, row, scatter_dimension=0, tiled=True)
 
-def Cannon_OS(Xij, Wij, row, col, K, B):
-    colsize = jax.lax.psum(1, col)
-    rowsize = jax.lax.psum(1, row)
-    assert colsize == rowsize
-    colidx = jax.lax.axis_index(axis_name=col)
-    rowidx = jax.lax.axis_index(axis_name=row)
-
-    shift_r = partial(jax.lax.ppermute, axis_name=col,
-                        perm=[(i, (i + 1) % colsize) for i in range(colsize)])
-    shift_l = partial(jax.lax.ppermute, axis_name=col,
-                        perm=[(i, (i - 1) % colsize) for i in range(colsize)])
-    shift_up = partial(jax.lax.ppermute, axis_name=row,
-                        perm=[(i, (i + 1) % rowsize) for i in range(rowsize)])
-    shift_dn = partial(jax.lax.ppermute, axis_name=row,
-                        perm=[(i, (i - 1) % rowsize) for i in range(rowsize)])
-
-    #w_lo, w_hi = jnp.split(Wij, 2, axis=0)
-    #x_lo, x_hi = jnp.split(Xij, 2, axis=1)
-    def shift_l_fn(ii,carry):
-        return shift_l(carry)
-    def shift_dn_fn(ii,carry):
-        return shift_dn(carry)
-    #shift blocks
-    w_lo = jax.lax.fori_loop(0,colidx,shift_dn_fn,init_val=Wij)
-    #w_hi = jax.lax.ppermute(w_hi, axis_name=row, 
-    #                 perm=[(i, (i + rowsize - colidx) % rowsize) for i in range(rowsize)])
-    x_lo = jax.lax.fori_loop(0,rowidx,shift_l_fn,init_val=Xij)
-    #x_hi = jax.lax.ppermute(x_hi, axis_name=col, 
-    #                 perm=[(i, (i + colsize - rowidx) % colsize) for i in range(colsize)])
-
-    out_block  =  x_lo @ w_lo
-    #out_block +=  x_hi @ w_hi
-    '''
-    def body_fn(ii, carry):
-        xl,xh,wl,wh,oblock = carry
-        wl = shift_dn(wl)
-        #wh = shift_up(wh)
-        xl = shift_l(xl)
-        #xh = shift_r(xh)
-        oblock += xl @ wl
-        #oblock += xh @ wh
-        return (xl,xh,wl,wh,oblock)
     
-    return jax.lax.fori_loop(1,rowsize,body_fn,init_val=(x_lo,x_lo,w_lo,w_lo,out_block))[4]
-    '''
-    for ii in range(1,rowsize):
-        w_lo = shift_dn(w_lo)
-        x_lo = shift_l(x_lo)
-        out_block += x_lo @ w_lo
-    return out_block
-    
-
 
 def Systolic_OS(Xij, Wij, row, col, K, B): #smallest block size B
     
@@ -254,6 +203,89 @@ def Systolic_WS(Xji, Wij, row, col, K, B): #smallest block size B
     Yij = jax.lax.fori_loop(1,K,body_fn,init_val=Yij)
     return Yij.reshape(-1,Wij.shape[1])
 
+
+
+def Cannon_OS(Xij, Wij, row, col, K, B):
+    N = jax.lax.psum(1, col)
+    
+    colidx = jax.lax.axis_index(axis_name=col)
+    rowidx = jax.lax.axis_index(axis_name=row)
+
+    shift_r = partial(jax.lax.ppermute, axis_name=col,
+                        perm=[(i, (i + 1) % N) for i in range(N)])
+    shift_l = partial(jax.lax.ppermute, axis_name=col,
+                        perm=[(i, (i - 1) % N) for i in range(N)])
+    shift_up = partial(jax.lax.ppermute, axis_name=row,
+                        perm=[(i, (i + 1) % N) for i in range(N)])
+    shift_dn = partial(jax.lax.ppermute, axis_name=row,
+                        perm=[(i, (i - 1) % N) for i in range(N)])
+
+    Xi = jax.lax.all_gather(Xij, col, tiled=True, axis=1)
+    Wj = jax.lax.all_gather(Wij, row, tiled=True, axis=0)
+    
+    B = Xi.shape[1] // N // 2
+    print(B)
+    k = (colidx+rowidx)%N
+    x_lo = jax.lax.dynamic_slice_in_dim(Xi, (2*k) * B, B, 1)
+    x_hi = jax.lax.dynamic_slice_in_dim(Xi, (2*k+1) * B, B, 1)
+    w_lo = jax.lax.dynamic_slice_in_dim(Wj, (2*k) * B, B, 0)
+    w_hi = jax.lax.dynamic_slice_in_dim(Wj, (2*k+1) * B, B, 0)
+    print(x_lo.shape)
+    print(w_hi.shape)
+    out_block  =  x_lo @ w_lo
+    out_block +=  x_hi @ w_hi
+
+    def body_fn(ii, carry):
+        xl,xh,wl,wh,oblock = carry
+        wl = shift_dn(wl)
+        wh = shift_up(wh)
+        xl = shift_l(xl)
+        xh = shift_r(xh)
+        oblock += xl @ wl
+        oblock += xh @ wh
+        return (xl,xh,wl,wh,oblock)
+    
+    return jax.lax.fori_loop(1,N,body_fn,init_val=(x_lo,x_hi,w_lo,w_hi,out_block))[4]
+
+def Cannon_IS(Xij, Wji, row, col, K, B):
+    N = jax.lax.psum(1, col)
+    
+    colidx = jax.lax.axis_index(axis_name=col)
+    rowidx = jax.lax.axis_index(axis_name=row)
+    k = (colidx + rowidx)%N
+    B = Wji.shape[0] // 2
+    shift_r = partial(jax.lax.ppermute, axis_name=col,
+                        perm=[(i, (i + 1) % N) for i in range(N)])
+    shift_l = partial(jax.lax.ppermute, axis_name=col,
+                        perm=[(i, (i - 1) % N) for i in range(N)])
+    shift_up = partial(jax.lax.ppermute, axis_name=row,
+                        perm=[(i, (i + 1) % N) for i in range(N)])
+    shift_dn = partial(jax.lax.ppermute, axis_name=row,
+                        perm=[(i, (i - 1) % N) for i in range(N)])
+
+    Wj = jax.lax.all_gather(Wji, row, tiled=True, axis=0)
+    w_lo = jax.lax.dynamic_slice_in_dim(Wj, (2*k) * B, B, 0)
+    w_hi = jax.lax.dynamic_slice_in_dim(Wj, (2*k+1) * B, B, 0)
+    
+    y_lo  = jnp.einsum('bi,oi->bo',Xij,w_lo)
+    y_hi  = jnp.einsum('bi,oi->bo',Xij,w_hi)
+    y_lo = shift_l(y_lo)
+    y_hi = shift_r(y_hi)
+    def body_fn(ii, carry):
+        wl,wh,yl,yh = carry
+        
+        wl = shift_dn(wl)
+        wh = shift_up(wh)
+        yl = yl + jnp.einsum('bi,oi->bo',Xij,wl)
+        yh = yh + jnp.einsum('bi,oi->bo',Xij,wh)
+        yl = shift_l(yl)
+        yh = shift_r(yh)
+        return (wl,wh,yl,yh)
+    
+    _,_,y_lo,y_hi = jax.lax.fori_loop(1,N,body_fn,init_val=(w_lo,w_hi,y_lo,y_hi))
+    Yik = jnp.concatenate([y_lo,y_hi],axis=1)
+    Yi = jax.lax.all_gather(Yik, col, tiled=True, axis=1)
+    return jax.lax.dynamic_slice_in_dim(Yi, 2*((colidx-rowidx)%N) * B, 2*B, axis=1)
 
 class SPMD:
     def __init__(self, mesh, algorithm='collective', blocksize=8):
@@ -318,11 +350,21 @@ if __name__=='__main__':
     X = jnp.arange( B*S*H*D,dtype=jnp.float32).reshape(B*S, H*D)/(B*S*H*D)
     W = jnp.arange(H*D*4*H*D,dtype=jnp.float32).reshape(H*D, 4*H*D) / (4*H*D*H*D)
     Y = X@W
-    
-    
+
     Xo = jax.device_put(X, NamedSharding(mesh, P('x', 'y')))
     Wo = jax.device_put(W, NamedSharding(mesh, P('x', 'y')))
+    
     CanOS = jax.jit(partial(shard_map, mesh=mesh, in_specs=(P('x', 'y'),P('x', 'y')),
          out_specs=P('x', 'y'))(partial(Cannon_OS, row='x', col='y', K=8,B=8)))
     Yo = CanOS(X,W)
     print(allclose(Yo,X@W))
+
+    CanIS = jax.jit(partial(shard_map, mesh=mesh, in_specs=(P('x', 'y'),P('x', 'y')),
+         out_specs=P('x', 'y'))(partial(Cannon_IS, row='x', col='y', K=8,B=8)))
+    Xp = CanIS(Yo,Wo)
+    print(allclose(Xp,Y@W.transpose()))
+
+    myalg = SPMD(mesh,'systolic')
+    IS = myalg.IS()
+    Xp = IS(Yo,Wo)
+    print(allclose(Xp,Y@W.transpose()))
