@@ -165,8 +165,8 @@ class FFLayerModel:
                 fwtime = CostModel.Systolic_IS(mesh, self.out_dim, self.bsize, self.in_dim, K)
                 bdtime = CostModel.Systolic_WS(mesh, self.bsize, self.in_dim, self.out_dim, K)
                 bwtime = CostModel.Systolic_OS(mesh, self.out_dim, self.in_dim, self.bsize, K)
-        print("fw: {:.3f}, bd: {:.3f}, bw: {:.3f}")
-        return fwtime + bdtime + bwtime
+        print("fw: {}, bd: {}, bw: {}".format(fwtime, bdtime, bwtime))
+        return (fwtime[0] + bdtime[0] + bwtime[0]+fwtime[1] + bdtime[1] + bwtime[1])
     
 class ComputeGraph:
     def __init__(self):
@@ -240,7 +240,7 @@ def TransformerBlock(B,S,num_heads, head_dim):
     return graph
 
 def possibleK(B,I,O,meshshape,dataflow):
-    mlcm = math.lcm(meshshape[0], meshshape[1])
+    mlcm = meshshape[0]*meshshape[1] // math.gcd(meshshape[0], meshshape[1])
     if dataflow == 'os':
         kdim = I//mlcm//8
     elif dataflow == 'is':
@@ -265,77 +265,17 @@ def possibleK(B,I,O,meshshape,dataflow):
         return kdim
 
 #shapes: list of available mesh shapes. Must be a same number of chips
-def autotuneTransformer(graph:ComputeGraph, shapes):
-    layers = copy.copy(graph.nodenames)
-    shardings = {}
-    transposition = {}
-    dataflows = {}
+class Autotuner:
+    def __init__(self, graph, shapes):
+        self.graph = graph
+        self.shapes = shapes
+        self.layers = copy.copy(graph.nodenames)
+        self.shardings = {}
+        self.transposition = {}
+        self.dataflows = {}
 
-    #step 1: the dataflow
-    for lname in layers:
-        layer = graph.nodes[lname]
-        if layer['op_type'] == 'FeedForward':
-            B = 1
-            for sdim in layer['shape'][:-1]:
-                B = B*sdim
-            inputname = layer['inputs'][0]
-            I = graph.nodes[inputname]['shape'][-1]
-            O = layer['shape'][-1]
-            if O>=I and B>=I:
-                dataflows[lname] = 'os'
-            elif I>=O and B>=O:
-                dataflows[lname] = 'is'
-            else: #weight is the biggest
-                dataflows[lname] = 'ws'
-    #step 2: transpositions
-    for pos,lname in enumerate(layers):
-        layer = graph.nodes[lname]
-        if layer['op_type'] == 'Input':
-            transposition[lname] = False
-        elif layer['op_type'] == 'FeedForward':
-            input_name = layer['inputs'][0]
-            assert input_name in transposition
-            if dataflows[lname] == 'ws':
-                transposition[lname] = not transposition[input_name]
-            else:
-                transposition[lname] = transposition[input_name]
-        elif layer['op_type'] == 'Add':
-            input_1 = layer['inputs'][0]
-            input_2 = layer['inputs'][1]
-            assert input_1 in transposition
-            assert input_2 in transposition
-            if transposition[input_1] == transposition[input_2]:
-                transposition[lname] = transposition[input_1]
-            elif transposition[input_1]: #2 is transposed
-                transpose_op = graph.insert_operand(
-                    'Transpose', (input_2,), layer['shape'],pos)
-                layer['inputs'] = (input_1, transpose_op['op_name'])
-                transposition[lname] = False
-                transposition[transpose_op['op_name']] = False
-            else:
-                transpose_op = graph.insert_operand(
-                    'Transpose', (input_1,), layer['shape'],pos)
-                layer['inputs'] = (input_2, transpose_op['op_name'])
-                transposition[lname] = False
-                transposition[transpose_op['op_name']] = False
-        else:
-            input_name = layer['inputs'][0]
-            assert input_name in transposition
-            transposition[lname] = transposition[input_name]
-    
-    #step 3: find the shape for minimal comm. cost
-    bestTime = float('inf')
-    bestMesh = shapes[0]
-    bestksplits = {}
-    for meshshape in shapes:
-        ksplits = {}
-        mesh = DeviceMesh(meshshape,
-                          242*1024**4, bws_per_direction=bws,
-                          link_latencies=latencies, base_overheads=base_overheads)
-        totalTraffic = 0.0
-        totalLatency = 0.0
-        totalPipeline = 0.0
-        for lname in graph.nodenames:
+        #step 1: the dataflow
+        for lname in self.layers:
             layer = graph.nodes[lname]
             if layer['op_type'] == 'FeedForward':
                 B = 1
@@ -344,35 +284,177 @@ def autotuneTransformer(graph:ComputeGraph, shapes):
                 inputname = layer['inputs'][0]
                 I = graph.nodes[inputname]['shape'][-1]
                 O = layer['shape'][-1]
-                model = FFLayerModel(B,I,O,dataflows[lname],transposition[lname])
-                totalTraffic += model.totalTrafficTime(mesh)
-                klist = possibleK(B,I,O,meshshape, dataflows[lname])
+                if O>=I and B>=I:
+                    self.dataflows[lname] = 'os'
+                elif I>=O and B>=O:
+                    self.dataflows[lname] = 'is'
+                else: #weight is the biggest
+                    self.dataflows[lname] = 'ws'
+        #step 2: transpositions
+        for pos,lname in enumerate(self.layers):
+            layer = graph.nodes[lname]
+            if layer['op_type'] == 'Input':
+                self.transposition[lname] = False
+            elif layer['op_type'] == 'FeedForward':
+                input_name = layer['inputs'][0]
+                assert input_name in self.transposition
+                if self.dataflows[lname] == 'ws':
+                    self.transposition[lname] = not self.transposition[input_name]
+                else:
+                    self.transposition[lname] = self.transposition[input_name]
+            elif layer['op_type'] == 'Add':
+                input_1 = layer['inputs'][0]
+                input_2 = layer['inputs'][1]
+                assert input_1 in self.transposition
+                assert input_2 in self.transposition
+                if self.transposition[input_1] == self.transposition[input_2]:
+                    self.transposition[lname] = self.transposition[input_1]
+                elif self.transposition[input_1]: #2 is transposed
+                    transpose_op = graph.insert_operand(
+                        'Transpose', (input_2,), layer['shape'],pos)
+                    layer['inputs'] = (input_1, transpose_op['op_name'])
+                    self.transposition[lname] = False
+                    self.transposition[transpose_op['op_name']] = False
+                else:
+                    transpose_op = graph.insert_operand(
+                        'Transpose', (input_1,), layer['shape'],pos)
+                    layer['inputs'] = (input_2, transpose_op['op_name'])
+                    self.transposition[lname] = False
+                    self.transposition[transpose_op['op_name']] = False
+            else:
+                input_name = layer['inputs'][0]
+                assert input_name in self.transposition
+                self.transposition[lname] = self.transposition[input_name]
+        self.bestshape = self.analyticalAutotune() #first find analytical optimal
+    def analyticalAutotune(self):
+        bestTime = float('inf')
+        bestMesh = self.shapes[0]
+        bestksplits = {}
+        for meshshape in self.shapes:
+            ksplits = {}
+            mesh = DeviceMesh(meshshape,
+                            242*1024**4, bws_per_direction=bws,
+                            link_latencies=latencies, base_overheads=base_overheads)
+            totalTraffic = 0.0
+            totalLatency = 0.0
+            totalPipeline = 0.0
+            for lname in self.graph.nodenames:
+                layer = self.graph.nodes[lname]
+                if layer['op_type'] == 'FeedForward':
+                    B = 1
+                    for sdim in layer['shape'][:-1]:
+                        B = B*sdim
+                    inputname = layer['inputs'][0]
+                    I = self.graph.nodes[inputname]['shape'][-1]
+                    O = layer['shape'][-1]
+                    model = FFLayerModel(B,I,O,self.dataflows[lname],self.transposition[lname])
+                    totalTraffic += model.totalTrafficTime(mesh)
+                    klist = possibleK(B,I,O,meshshape, self.dataflows[lname])
+                    bestK = klist[0]
+                    bestLatency = model.totalLatency(mesh, klist[0])
+                    bestPipeline = model.pipelineOverhead(mesh,klist[0])
+                    for K in klist[1:]:
+                        latency = model.totalLatency(mesh, K)
+                        pipe = model.pipelineOverhead(mesh,K)
+                        if  latency+ 2*pipe  < bestLatency + 2*bestPipeline:
+                            bestK = K
+                            bestLatency = latency
+                            bestPipeline = pipe
+                    ksplits[lname] = bestK
+                    totalLatency += bestLatency
+                    totalPipeline += bestPipeline
+            commTime = totalTraffic + totalLatency
+            print("Mesh shape {}, traffic time {:.3f}, latency {:.3f}, pipeline: {:.3f} ms".format(
+                meshshape, totalTraffic*1000, totalLatency*1000, totalPipeline*1000
+            ))
+            if commTime < bestTime:
+                bestMesh = meshshape
+                bestTime = commTime
+                bestksplits = ksplits
+        print("Best mesh shape is : {}".format(bestMesh))
+        for flayer in self.dataflows:
+            print("Layer: {}\t Dataflow: {}\t Transpose: {}\t ksplit: {}".format(
+                flayer, self.dataflows[flayer], self.transposition[flayer], bestksplits[flayer]
+            ))
+        self.ksplits = bestksplits
+        return bestMesh
+    def emulateFFTime(self, meshshape):
+        totaltime = 0.0
+        mesh = DeviceMesh(meshshape,
+                        242*1024**4, bws_per_direction=bws,
+                        link_latencies=latencies, base_overheads=base_overheads)
+        ksplits = {}
+        for lname in self.graph.nodenames:
+            layer = self.graph.nodes[lname]
+            if layer['op_type'] == 'FeedForward':
+                B = 1
+                for sdim in layer['shape'][:-1]:
+                    B = B*sdim
+                inputname = layer['inputs'][0]
+                I = self.graph.nodes[inputname]['shape'][-1]
+                O = layer['shape'][-1]
+                model = FFLayerModel(B,I,O,self.dataflows[lname],self.transposition[lname])
+                klist = possibleK(B,I,O,meshshape, self.dataflows[lname])
+                bestTime = model.emulate(mesh,klist[0])
                 bestK = klist[0]
-                bestLatency = model.totalLatency(mesh, klist[0])
-                bestPipeline = model.pipelineOverhead(mesh,klist[0])
-                for K in klist[1:]:
-                    latency = model.totalLatency(mesh, K)
-                    pipe = model.pipelineOverhead(mesh,K)
-                    if  latency+ 2*pipe  < bestLatency + 2*bestPipeline:
+                for k in klist[1:]:
+                    curtime = model.emulate(mesh,k)
+                    if curtime > bestTime:
                         bestK = K
-                        bestLatency = latency
-                        bestPipeline = pipe
+                        bestTime = curtime
+                totaltime += bestTime
                 ksplits[lname] = bestK
-                totalLatency += bestLatency
-                totalPipeline += bestPipeline
-        commTime = totalTraffic + totalLatency
-        print("Mesh shape {}, traffic time {:.3f}, latency {:.3f}, pipeline: {:.3f} ms".format(
-            meshshape, totalTraffic*1000, totalLatency*1000, totalPipeline*1000
-        ))
-        if commTime < bestTime:
-            bestMesh = meshshape
-            bestTime = commTime
-            bestksplits = ksplits
-    print("Best mesh shape is : {}".format(bestMesh))
-    for flayer in dataflows:
-        print("Layer: {}\t Dataflow: {}\t Transpose: {}\t ksplit: {}".format(
-            flayer, dataflows[flayer], transposition[flayer], bestksplits[flayer]
-        ))
+        return totaltime, ksplits
+    def emulatedFinetune(self):
+        print("Start emulated finetuning: ")
+        curidx = self.shapes.index(self.bestshape)
+        print("Trying shape of {}".format(self.bestshape))
+        curtime, cursplit = self.emulateFFTime(self.bestshape)
+        def searchBackward(curidx,curtime,cursplit):
+            if curidx == 0:
+                return curidx, cursplit
+            print("Trying shape of {}".format(self.shapes[curidx-1]))
+            prevtime, prevsplit = self.emulateFFTime(self.shapes[curidx-1])
+            if curtime <= prevtime:
+                return curidx, cursplit
+            else:
+                return searchBackward(curidx-1, prevtime, prevsplit)
+        def searchForward(curidx,curtime,cursplit):
+            if curidx == len(self.shapes)-1:
+                return curidx, cursplit
+            print("Trying shape of {}".format(self.shapes[curidx+1]))
+            nexttime, nextsplit = self.emulateFFTime(self.shapes[curidx+1])
+            if curtime <= nexttime:
+                return curidx, cursplit
+            else:
+                return searchForward(curidx+1, nexttime, nextsplit)
+
+        if curidx == len(self.shapes)-1:
+            bestidx, bestsplit = searchBackward(curidx, curtime, cursplit)
+        elif curidx == 0:
+            bestidx, bestsplit = searchForward(curidx, curtime, cursplit)
+        else:
+            print("Trying shape of {}".format(self.shapes[curidx-1]))
+            prevtime, prevsplit = self.emulateFFTime(self.shapes[curidx-1])
+            print("Trying shape of {}".format(self.shapes[curidx+1]))
+            nexttime, nextsplit = self.emulateFFTime(self.shapes[curidx+1])
+            if prevtime < curtime:
+                bestidx, bestsplit = searchBackward(curidx-1, prevtime, prevsplit)
+            elif nexttime < curtime:
+                bestidx, bestsplit = searchForward(curidx+1, nexttime, nextsplit)
+            else:
+                bestidx, bestsplit = curidx, cursplit
+        self.bestshape = self.shapes[bestidx]
+        self.ksplits = bestsplit
+        print("Best mesh shape is : {}".format(self.bestshape))
+        for flayer in self.dataflows:
+            print("Layer: {}\t Dataflow: {}\t Transpose: {}\t ksplit: {}".format(
+                flayer, self.dataflows[flayer], self.transposition[flayer], self.ksplits[flayer]
+            ))
+
+            
+
+        
 
 
 
@@ -391,4 +473,10 @@ if __name__ == '__main__':
     print("Emulated compute time: {}".format(computetime*1000))
     #shapes = [(4,96), (8,48), (12,32), (16,24), (24,16), (32,12), (48,8), (96,4)]
     shapes = [(4,64), (8,32), (16,16), (32,8), (64,4)]
-    autotuneTransformer(gpt3, shapes)
+    tuner = Autotuner(gpt3, shapes)
+    mesh = DeviceMesh((32,8),
+                    242*1024**4, bws_per_direction=bws,
+                    link_latencies=latencies, base_overheads=base_overheads)
+    ffmodel = FFLayerModel(B*S,H*D,4*H*D,'os')
+    ffmodel.emulate(mesh,4)
+    tuner.emulatedFinetune()

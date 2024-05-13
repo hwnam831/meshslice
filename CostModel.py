@@ -34,7 +34,7 @@ def estimateBroadcast(mesh, data_shape: tuple, dim: int, precision):
     data_size = data_shape[0]*data_shape[1]*precision//8
     time_per_step = data_size / (bw*2) 
     link_latency = mesh.link_latencies['allgather']
-    base_overhead = mesh.base_overhead['allgather']
+    base_overhead = mesh.base_overheads['allgather']
     bw = mesh.bws['allgather']
     if dim is mesh.meshdim:
         r,c = mesh.submesh
@@ -49,7 +49,7 @@ def estimateAllgather(mesh, data_shape: tuple, dim: int, precision):
     steps = mesh.shape[dim]-1
     
     link_latency = mesh.link_latencies['allgather']
-    base_overhead = mesh.base_overhead['allgather']
+    base_overhead = mesh.base_overheads['allgather']
     bw = mesh.bws['allgather']
     time_per_step = data_size / (bw*2) # bidirectional
     if dim is mesh.meshdim:
@@ -65,7 +65,7 @@ def estimateAllgather(mesh, data_shape: tuple, dim: int, precision):
 def estimateSkew(mesh, data_shape: tuple, precision):
     assert mesh.shape[0] == mesh.shape[1]
     link_latency = mesh.link_latencies['sendrecv']
-    base_overhead = mesh.base_overhead['sendrecv']
+    base_overhead = mesh.base_overheads['sendrecv']
     bw = mesh.bws['sendrecv']
     steps = mesh.shape[0]//2
     time_per_step = data_shape[0]*data_shape[1] * (precision//8) / (bw*2)
@@ -107,7 +107,7 @@ def estimateReduce(mesh, data_shape: tuple, dim: int, precision):
     data_size = data_shape[0]*data_shape[1]*precision//8
     
     link_latency = mesh.link_latencies['reducescatter']
-    base_overhead = mesh.base_overhead['reducescatter']
+    base_overhead = mesh.base_overheads['reducescatter']
     bw = mesh.bws['reducescatter']
     time_per_step = data_size / (bw*2) 
     if dim is mesh.meshdim:
@@ -120,7 +120,7 @@ def estimateReduce(mesh, data_shape: tuple, dim: int, precision):
 def estimateReduceScatter(mesh, data_shape: tuple, dim: int, precision):
     data_size = data_shape[0]*data_shape[1]*precision//8
     link_latency = mesh.link_latencies['reducescatter']
-    base_overhead = mesh.base_overhead['reducescatter']
+    base_overhead = mesh.base_overheads['reducescatter']
     bw = mesh.bws['reducescatter']
     steps = mesh.shape[dim]-1
     time_per_step = data_size / (bw*2) # bidirectional
@@ -169,7 +169,7 @@ def SUMMA_WS(mesh, M, N, K, steps=8, precisions=(16,16,16)):
 
 def Cannon_OS(mesh, M, N, K, steps=8, precisions=(16,16,16)):
     link_latency = mesh.link_latencies['sendrecv']
-    base_overhead = mesh.base_overhead['sendrecv']
+    base_overhead = mesh.base_overheads['sendrecv']
     bw = mesh.bws['sendrecv']
     ishape = (M//mesh.shape[0], K//(mesh.shape[1]))
     wshape = (K//(mesh.shape[0]), N//mesh.shape[1])
@@ -188,7 +188,7 @@ def Cannon_IS(mesh, M, N, K, steps=8, precisions=(16,16,16)):
     wshape = (N//(mesh.shape[0]), K//mesh.shape[1])
     oshape = (M//(mesh.shape[0]), N//mesh.shape[1])
     link_latency = mesh.link_latencies['sendrecv']
-    base_overhead = mesh.base_overhead['sendrecv']
+    base_overhead = mesh.base_overheads['sendrecv']
     bw = mesh.bws['sendrecv']
     skew_o = estimateSkew(mesh, oshape)
     skew_w = estimateSkew(mesh, wshape)
@@ -205,7 +205,7 @@ def Cannon_WS(mesh, M, N, K, steps=8, precisions=(16,16,16)):
     wshape = (N//(mesh.shape[0]), K//mesh.shape[1])
     oshape = (M//(mesh.shape[0]), N//mesh.shape[1])
     link_latency = mesh.link_latencies['sendrecv']
-    base_overhead = mesh.base_overhead['sendrecv']
+    base_overhead = mesh.base_overheads['sendrecv']
     bw = mesh.bws['sendrecv']
     skew_o = estimateSkew(mesh, oshape)
     skew_i = estimateSkew(mesh, ishape)
@@ -289,7 +289,7 @@ def LogicalRing_ISplit(mesh, M, N, K, steps=8):
     ishape = (M, K//P)
     wshape = (K, N//P)
     link_latency = mesh.link_latencies['sendrecv']
-    base_overhead = mesh.base_overhead['sendrecv']
+    base_overhead = mesh.base_overheads['sendrecv']
     bw = mesh.bws['sendrecv']
     roll_i = bytesize(ishape)/(bw*2) + link_latency + base_overhead
     compute = estimateMatmul(mesh, M, N//P, K//P)
@@ -299,7 +299,7 @@ def LogicalRing_WSplit(mesh, M, N, K, steps=8):
     ishape = (M//P, K)
     wshape = (K//P, N)
     link_latency = mesh.link_latencies['sendrecv']
-    base_overhead = mesh.base_overhead['sendrecv']
+    base_overhead = mesh.base_overheads['sendrecv']
     bw = mesh.bws['sendrecv']
     roll_w = bytesize(wshape)/(bw*2) + link_latency + base_overhead
     compute = estimateMatmul(mesh, M//P, N, K//P)
@@ -311,7 +311,7 @@ def LogicalRing_OSplit(mesh, M, N, K, steps=8):
     wshape = (K//P, N)
     oshape = (M, N//P)
     link_latency = mesh.link_latencies['sendrecv']
-    base_overhead = mesh.base_overhead['sendrecv']
+    base_overhead = mesh.base_overheads['sendrecv']
     bw = mesh.bws['sendrecv']
     roll_o = bytesize(oshape)/(bw*2) + link_latency + base_overhead
     compute = estimateMatmul(mesh, M, N//P, K//P)
