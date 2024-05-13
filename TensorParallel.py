@@ -287,6 +287,46 @@ def Cannon_IS(Xij, Wji, row, col, K, B):
     Yi = jax.lax.all_gather(Yik, col, tiled=True, axis=1)
     return jax.lax.dynamic_slice_in_dim(Yi, 2*((colidx-rowidx)%N) * B, 2*B, axis=1)
 
+def Cannon_WS(Xji, Wij, row, col, K, B):
+    N = jax.lax.psum(1, col)
+    
+    colidx = jax.lax.axis_index(axis_name=col)
+    rowidx = jax.lax.axis_index(axis_name=row)
+    k = (colidx + rowidx)%N
+    B = Xji.shape[1] // 2
+    shift_r = partial(jax.lax.ppermute, axis_name=col,
+                        perm=[(i, (i + 1) % N) for i in range(N)])
+    shift_l = partial(jax.lax.ppermute, axis_name=col,
+                        perm=[(i, (i - 1) % N) for i in range(N)])
+    shift_up = partial(jax.lax.ppermute, axis_name=row,
+                        perm=[(i, (i + 1) % N) for i in range(N)])
+    shift_dn = partial(jax.lax.ppermute, axis_name=row,
+                        perm=[(i, (i - 1) % N) for i in range(N)])
+
+    Xi = jax.lax.all_gather(Xji, col, tiled=True, axis=1)
+    x_lo = jax.lax.dynamic_slice_in_dim(Xi, (2*k) * B, B, 1)
+    x_hi = jax.lax.dynamic_slice_in_dim(Xi, (2*k+1) * B, B, 1)
+    
+    y_lo  = jnp.einsum('ib,io->bo',x_lo,Wij)
+    y_hi  = jnp.einsum('ib,io->bo',x_hi,Wij)
+    y_lo = shift_dn(y_lo)
+    y_hi = shift_up(y_hi)
+    def body_fn(ii, carry):
+        xl,xh,yl,yh = carry
+        
+        xl = shift_l(xl)
+        xh = shift_r(xh)
+        yl += jnp.einsum('ib,io->bo',xl,Wij)
+        yh += jnp.einsum('ib,io->bo',xh,Wij)
+        yl = shift_dn(yl)
+        yh = shift_up(yh)
+        return (xl,xh,yl,yh)
+    
+    _,_,y_lo,y_hi = jax.lax.fori_loop(1,N,body_fn,init_val=(x_lo,x_hi,y_lo,y_hi))
+    Ykj = jnp.concatenate([y_lo,y_hi],axis=0)
+    Yj = jax.lax.all_gather(Ykj, row, tiled=True, axis=0)
+    return jax.lax.dynamic_slice_in_dim(Yj, 2*((rowidx-colidx)%N) * B, 2*B, axis=0)
+
 class SPMD:
     def __init__(self, mesh, algorithm='collective', blocksize=8):
         self.mesh = mesh
@@ -368,3 +408,12 @@ if __name__=='__main__':
     IS = myalg.IS()
     Xp = IS(Yo,Wo)
     print(allclose(Xp,Y@W.transpose()))
+
+    CanWS = jax.jit(partial(shard_map, mesh=mesh, in_specs=(P('x', 'y'),P('x', 'y')),
+         out_specs=P('x', 'y'))(partial(Cannon_WS, row='x', col='y', K=8,B=8)))
+    Wp = CanWS(Xo,Yo)
+    print(allclose(Wp,X.transpose()@Y))
+
+    WS = myalg.WS()
+    Wp2 = WS(Xo,Yo)
+    print(allclose(Wp2,X.transpose()@Y))
