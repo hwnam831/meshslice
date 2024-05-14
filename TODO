@@ -8,5 +8,6 @@
 - implement them for multi-host cpu (error. do for TRC)
 - Comm cost model generator (Test in GPUs first)
 - cost model + autotuner (Test in GPUs first)
-- Evaluation code for multi-chip (Debug in CPUs first)
+- custom_vjp for FFlayer (SPMD) and sharded other layers
+- Evaluation code for multi-chip (Debug in CPUs first), TPU profiler
 - run on TRC
