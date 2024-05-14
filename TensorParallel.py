@@ -338,6 +338,9 @@ class SPMD:
             self.funcs = {'os':Collective_OS, 'is':Collective_IS, 'ws':Collective_WS}
         elif algorithm=='wang':
             self.funcs = {'os':Wang_OS, 'is':Wang_IS, 'ws':Wang_WS}
+        elif algorithm=='cannon':
+            assert mesh.devices.shape[0] == mesh.devices.shape[1]
+            self.funcs = {'os':Cannon_OS, 'is':Cannon_IS, 'ws':Cannon_WS}
         else:
             self.funcs = {'os':Systolic_OS, 'is':Systolic_IS, 'ws':Systolic_WS}
     def OS(self, K=8):
@@ -353,6 +356,45 @@ class SPMD:
          out_specs=self.spec)(partial(
              self.funcs['ws'], row=self.rowaxis, col=self.colaxis, K=K,B=self.blocksize)))
 
+def Cannon_WS(Xji, Wij, row, col, K, B):
+    N = jax.lax.psum(1, col)
+    
+    colidx = jax.lax.axis_index(axis_name=col)
+    rowidx = jax.lax.axis_index(axis_name=row)
+    k = (colidx + rowidx)%N
+    B = Xji.shape[1] // 2
+    shift_r = partial(jax.lax.ppermute, axis_name=col,
+                        perm=[(i, (i + 1) % N) for i in range(N)])
+    shift_l = partial(jax.lax.ppermute, axis_name=col,
+                        perm=[(i, (i - 1) % N) for i in range(N)])
+    shift_up = partial(jax.lax.ppermute, axis_name=row,
+                        perm=[(i, (i + 1) % N) for i in range(N)])
+    shift_dn = partial(jax.lax.ppermute, axis_name=row,
+                        perm=[(i, (i - 1) % N) for i in range(N)])
+
+    Xi = jax.lax.all_gather(Xji, col, tiled=True, axis=1)
+    x_lo = jax.lax.dynamic_slice_in_dim(Xi, (2*k) * B, B, 1)
+    x_hi = jax.lax.dynamic_slice_in_dim(Xi, (2*k+1) * B, B, 1)
+    
+    y_lo  = jnp.einsum('ib,io->bo',x_lo,Wij)
+    y_hi  = jnp.einsum('ib,io->bo',x_hi,Wij)
+    y_lo = shift_dn(y_lo)
+    y_hi = shift_up(y_hi)
+    def body_fn(ii, carry):
+        xl,xh,yl,yh = carry
+        
+        xl = shift_l(xl)
+        xh = shift_r(xh)
+        yl += jnp.einsum('ib,io->bo',xl,Wij)
+        yh += jnp.einsum('ib,io->bo',xh,Wij)
+        yl = shift_dn(yl)
+        yh = shift_up(yh)
+        return (xl,xh,yl,yh)
+    
+    _,_,y_lo,y_hi = jax.lax.fori_loop(1,N,body_fn,init_val=(x_lo,x_hi,y_lo,y_hi))
+    Ykj = jnp.concatenate([y_lo,y_hi],axis=0)
+    Yj = jax.lax.all_gather(Ykj, row, tiled=True, axis=0)
+    return jax.lax.dynamic_slice_in_dim(Yj, 2*((rowidx-colidx)%N) * B, 2*B, axis=0)
 
 if __name__=='__main__':
     '''
@@ -386,6 +428,7 @@ if __name__=='__main__':
     os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count=16' # Use 16 CPU devices
     devices = mesh_utils.create_device_mesh((4, 4))
     mesh = Mesh(devices, axis_names=('x', 'y'))
+    
     B,S,H,D = (4,128, 48,64)
     X = jnp.arange( B*S*H*D,dtype=jnp.float32).reshape(B*S, H*D)/(B*S*H*D)
     W = jnp.arange(H*D*4*H*D,dtype=jnp.float32).reshape(H*D, 4*H*D) / (4*H*D*H*D)

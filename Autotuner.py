@@ -165,7 +165,7 @@ class FFLayerModel:
                 fwtime = CostModel.Systolic_IS(mesh, self.out_dim, self.bsize, self.in_dim, K)
                 bdtime = CostModel.Systolic_WS(mesh, self.bsize, self.in_dim, self.out_dim, K)
                 bwtime = CostModel.Systolic_OS(mesh, self.out_dim, self.in_dim, self.bsize, K)
-        print("fw: {}, bd: {}, bw: {}".format(fwtime, bdtime, bwtime))
+        #print("fw: {}, bd: {}, bw: {}".format(fwtime, bdtime, bwtime))
         return (fwtime[0] + bdtime[0] + bwtime[0]+fwtime[1] + bdtime[1] + bwtime[1])
     
 class ComputeGraph:
@@ -222,7 +222,7 @@ class ComputeGraph:
             node = self.nodes[op_name]
             print('{}:{} = {}{}'.format(op_name, node['shape'], node['op_type'], node['inputs']))
 
-def TransformerBlock(B,S,num_heads, head_dim):
+def build_transformerBlock(B,S,num_heads, head_dim):
     graph = ComputeGraph()
     dim = num_heads*head_dim
     x_in = graph.Input([B,S,dim])
@@ -404,6 +404,7 @@ class Autotuner:
                         bestTime = curtime
                 totaltime += bestTime
                 ksplits[lname] = bestK
+        print("FFtime: {}ms".format(totaltime*1000))
         return totaltime, ksplits
     def emulatedFinetune(self):
         print("Start emulated finetuning: ")
@@ -459,12 +460,12 @@ class Autotuner:
 
 
 if __name__ == '__main__':
-    B=64
+    B=128
     S=2048
     H=128
     D=128
     K=8
-    gpt3 = TransformerBlock(B,S,H,D)
+    gpt3 = build_transformerBlock(B,S,H,D)
     gpt3.printGraph()
     computetime = 0
     computetime += 3* CostModel.estimateMatmul(None,B*S//32,H*D//8,H*D//K)*K
