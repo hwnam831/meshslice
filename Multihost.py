@@ -12,17 +12,9 @@ from jax.experimental.shard_map import shard_map
 from jax.tree_util import tree_map, tree_all
 import os
 import sys
-#os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count=8' # Use 8 CPU devices
-#jax.config.update('jax_platform_name', 'cpu')
+#lets assume TPU
 if __name__ == '__main__':
-    hostip = os.environ["MASTER_ADDR"]
-    num_proc= int(os.environ["SLURM_NTASKS"])
-    num_nodes= int(os.environ["SLURM_NNODES"])
-    
-    pid = int(os.environ["SLURM_PROCID"])
-    mport = os.environ["MASTER_PORT"]
-    print("ntasks: {}, nnodes: {}, pid:{}".format(num_proc, num_nodes, pid))
-    jax.distributed.initialize(coordinator_address=hostip+':1234', num_processes=num_proc, process_id=pid)
+    jax.distributed.initialize()
     print("Global device count: {}".format(jax.device_count()))
     devices = mesh_utils.create_device_mesh((jax.device_count()//2, 2))
     mesh = Mesh(devices, axis_names=('x', 'y'))
