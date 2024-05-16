@@ -58,11 +58,11 @@ if __name__=='__main__':
     data_sizes = [4096*2**i for i in range(17)]
     myspec = P('x','y')
     AG_y = jax.jit(partial(shard_map, mesh=mesh, in_specs=myspec,
-         out_specs=myspec)(partial(AG_, direction='y')))
+         out_specs=myspec)(partial(AG_, axis='y')))
     RS_y = jax.jit(partial(shard_map, mesh=mesh, in_specs=myspec,
-         out_specs=myspec)(partial(RS_, direction='y')))
+         out_specs=myspec)(partial(RS_, axis='y')))
     SendRecv_y = jax.jit(partial(shard_map, mesh=mesh, in_specs=myspec,
-         out_specs=myspec)(partial(SendRecv_, direction='y')))
+         out_specs=myspec)(partial(SendRecv_, axis='y')))
     
     print("\nAllgather_y: ")
     for dsize in data_sizes:
