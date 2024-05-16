@@ -66,21 +66,21 @@ if __name__=='__main__':
     
     print("\nAllgather_y: ")
     for dsize in data_sizes:
-        buffer = jnp.ones([rowcount*dsize//4096, 4096], dtype=jnp.float16)
+        buffer = jnp.ones([rowcount*dsize//4096, colcount*4096], dtype=jnp.bfloat16)
         buf_split = jax.device_put(buffer, NamedSharding(mesh, myspec))
         benchtimes = repeatBench(AG_y, buf_split)
         print("Size: {}KB,\t Time: {:.4f}+-{:.4f}ms".format(2*dsize//1024, mean(benchtimes)*1000, stdev(benchtimes)*1000))
 
     print("\nReduceScatter_y: ")
     for dsize in data_sizes:
-        buffer = jnp.ones([rowcount*dsize//4096, rowcount*4096], dtype=jnp.float16)
+        buffer = jnp.ones([rowcount*dsize//4096, colcount*colcount*4096], dtype=jnp.bfloat16)
         buf_split = jax.device_put(buffer, NamedSharding(mesh, myspec))
         benchtimes = repeatBench(RS_y, buf_split)
         print("Size: {}KB,\t Time: {:.4f}+-{:.4f}ms".format(2*dsize//1024, mean(benchtimes)*1000, stdev(benchtimes)*1000))
 
     print("\nSendRecv_y: ")
     for dsize in data_sizes:
-        buffer = jnp.ones([rowcount*dsize//4096, 4096], dtype=jnp.float16)
+        buffer = jnp.ones([rowcount*dsize//4096, colcount*4096], dtype=jnp.bfloat16)
         buf_split = jax.device_put(buffer, NamedSharding(mesh, myspec))
         benchtimes = repeatBench(SendRecv_y, buf_split)
         print("Size: {}KB,\t Time: {:.4f}+-{:.4f}ms".format(2*dsize//1024, mean(benchtimes)*1000, stdev(benchtimes)*1000))
