@@ -1,7 +1,7 @@
 import os
 from functools import partial
 
-from TensorParallel import SPMD
+from TensorParallel import SPMD, createMultihostMatrix
 from Autotuner import ComputeGraph, build_transformerBlock, Autotuner
 
 import jax
@@ -13,9 +13,8 @@ from jax.sharding import NamedSharding
 from jax.experimental import mesh_utils
 from jax.experimental.shard_map import shard_map
 from jax.tree_util import tree_map, tree_all
-import timeit
-import flax.linen as nn
-
+import time
+import sys
 
 
 class ShardedFFLayer:
@@ -26,14 +25,15 @@ class ShardedFFLayer:
     ksplit: int
     def __init__(self, mesh, algorithm, dataflow, ksplit, in_dim, out_dim, blocksize=8):
         self.mesh = mesh
+        row,col = mesh.axis_names
         self.algorithm = algorithm
         self.dataflow = dataflow
         self.ksplit = ksplit
         self.blocksize = blocksize
         if dataflow == 'is':
-            self.weight = jax.random.normal(jax.random.PRNGKey(1),[out_dim,in_dim], dtype=jnp.bfloat16)
+            self.weight = createMultihostMatrix(mesh, NamedSharding(mesh, P(row,col)), [out_dim, in_dim])
         else:
-            self.weight = jax.random.normal(jax.random.PRNGKey(2),[in_dim,out_dim], dtype=jnp.bfloat16)
+            self.weight = createMultihostMatrix(mesh, NamedSharding(mesh, P(row,col)), [in_dim, out_dim])
         SPMDbuilder = SPMD(mesh, algorithm, blocksize)
         OS = SPMDbuilder.OS(ksplit)
         IS = SPMDbuilder.IS(ksplit)
@@ -90,20 +90,27 @@ class ShardedLayerNorm:
     mesh: Mesh
     def __init__(self, mesh, in_dim):
         self.mesh = mesh
-        
-        self.gamma = jax.device_put(jnp.ones([in_dim], dtype=jnp.bfloat16),
-                                    NamedSharding(mesh, P(mesh.axis_names[1])))
-        self.bias = jax.device_put(
-            jax.random.normal(jax.random.PRNGKey(2),[in_dim], dtype=jnp.bfloat16),
-            NamedSharding(mesh, P(mesh.axis_names[1])))
         row, col = mesh.axis_names
+        local_gamma = jax.device_put(
+            jnp.split(jnp.ones([in_dim], dtype=jnp.bfloat16), len(mesh.local_devices)),
+            mesh.local_devices)
+        self.gamma = jax.make_array_from_single_device_arrays(
+            [in_dim], NamedSharding(mesh, P(col)), local_gamma)
+
+        local_bias = jax.device_put(
+            jnp.split(jnp.zeros([in_dim], dtype=jnp.bfloat16), len(mesh.local_devices)),
+            mesh.local_devices)
+        self.bias = jax.make_array_from_single_device_arrays(
+            [in_dim], NamedSharding(mesh, P(col)), local_bias)
+        '''
         #@jax.jit
         @partial(shard_map,mesh=mesh,in_specs=(P(col), P(col),P(row,col)),
                  out_specs=P(row,col))
         def _layernorm(g,b,x):
             #print(g.shape)
             #print(b.shape)
-            ndev = jax.lax.psum(1,mesh.axis_names[1])
+            #ndev = jax.lax.psum(1,mesh.axis_names[1])
+            ndev = mesh.devices.shape[1]
             mn_l = jnp.mean(x,axis=-1)
             sqmn_l = jnp.mean(x*x, axis=-1)
             mn = jax.lax.psum(mn_l, mesh.axis_names[1])/ndev
@@ -114,8 +121,26 @@ class ShardedLayerNorm:
             out =  g*(x-mn[:,None])*stdev[:,None] + b
             #print("layernorm shard shape: {}".format(out.shape))
             return out
+        self.forward = jax.jit(partial(_layernorm, self.gamma, self.bias))
+        '''
+        #only local layernorm
+        @partial(shard_map,mesh=mesh,in_specs=(P(row,col)),
+                 out_specs=P(row,col))
+        def _layernorm(x):
+            ndev = jax.lax.psum(1,mesh.axis_names[1])
+            mn_l = jnp.mean(x,axis=-1)
+            sqmn_l = jnp.mean(x*x, axis=-1)
+            mn = jax.lax.psum(mn_l, mesh.axis_names[1])/ndev
+            #print(mn.shape)
+            sqmn = jax.lax.psum(sqmn_l, mesh.axis_names[1])/ndev
+            #print(sqmn.shape)
+            stdev = 1/jnp.sqrt(sqmn - mn*mn + 1e-6)
+            out =  (x-mn[:,None])*stdev[:,None]
+            return out
+        
 
-        self.forward = partial(_layernorm, self.gamma, self.bias)
+        self.forward = jax.jit(_layernorm)
+        
 
 class ShardedAttention:
     mesh: Mesh
@@ -135,7 +160,7 @@ class ShardedAttention:
             attn_weights = jax.nn.softmax(jnp.einsum('bqhd,bkhd->bhqk',Q,K)/jnp.sqrt(Q.shape[-1]),axis=3)
             return jnp.einsum('bhqk,bkhd->bqhd',attn_weights,V).reshape(Xij.shape[0],-1)
 
-        self.forward = _attn
+        self.forward = jax.jit(_attn)
     
 class TransformerBlock:
     def __init__(self, mesh, S,H,D, dataflows, alg='systolic', ksplits=[4,4,4,4]):
@@ -150,10 +175,12 @@ class TransformerBlock:
         self.norm3 = ShardedLayerNorm(mesh, H*D)
     def _forward(self, x):
         out = self.norm1.forward(x)
+        #out = x
         out = self.in_proj.forward(out)
         out = self.attn.forward(out)
         out = self.out_proj.forward(out)
         res = self.norm2.forward(out + x)
+        #res = out+x
         #print(x2.shape)
         out = self.ff1.forward(res)
         out = jax.nn.gelu(out)
@@ -167,16 +194,46 @@ class TransformerBlock:
         return out
 
 if __name__ == '__main__':
-    jax.config.update('jax_platform_name', 'cpu')
-    os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count=16' # Use 16 CPU devices
-    devices = mesh_utils.create_device_mesh((4, 4))
-    mesh = Mesh(devices, axis_names=('x', 'y'))
-    x = jax.device_put(
-        jax.random.normal(jax.random.PRNGKey(3),[8*128,384], dtype=jnp.bfloat16),
-        NamedSharding(mesh, P('x','y')))
-    model = TransformerBlock(mesh, 128, 12, 32, dataflows=['os','os','os','is'], alg='systolic')
+    B=32
+    S=2048
+    H=96
+    D=128
+    alg = sys.argv[1]
+    jax.distributed.initialize()
+    print("Global device count: {}".format(jax.device_count()))
+    print("Local device count: {}".format(jax.local_device_count()))
+    colcount = jax.local_device_count()
+    rowcount = jax.device_count() // colcount
+    #print(jax.devices())
+    #print(jax.local_devices())
+    devices = mesh_utils.create_device_mesh((rowcount,colcount))
+    mesh = Mesh(devices, axis_names=('x','y'))
+    x = createMultihostMatrix(mesh, NamedSharding(mesh, P('x','y')), [B*S,H*D])
+    dy = createMultihostMatrix(mesh, NamedSharding(mesh, P('x','y')), [B*S,H*D])
+    
+    model = TransformerBlock(mesh, S, H, D, dataflows=['os','os','os','is'], alg=alg)
     out = model.forward(x)
-
-
-    dy = jax.random.normal(jax.random.PRNGKey(3),[8*128,384], dtype=jnp.bfloat16)
-    model.backward(dy)
+    grads = model.backward(dy)
+    out.block_until_ready()
+    grads[0].block_until_ready()
+    print(out.shape)
+    jax.profiler.start_trace("/tmp/tensorboard")
+    for _ in range(5):
+        out = model._forward(x)
+        out.block_until_ready()
+    for _ in range(5):
+        grads = model.backward(dy)
+        grads[0].block_until_ready()
+    jax.profiler.stop_trace()
+    starttime = time.time()
+    for _ in range(10):
+        out = model._forward(x)
+        out.block_until_ready()
+    endtime = time.time()
+    print("Forward time: {:.3f}ms".format((endtime-starttime)/10))
+    starttime = time.time()
+    for _ in range(10):
+        grads = model.backward(dy)
+        grads[0].block_until_ready()
+    endtime = time.time()
+    print("Backward time: {:.3f}ms".format((endtime-starttime)/10))

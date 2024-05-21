@@ -10,4 +10,7 @@
 - cost model + autotuner (Test in GPUs first)
 - custom_vjp for FFlayer (SPMD) and sharded other layers
 - Evaluation code for multi-chip (Debug in CPUs first), TPU profiler
-- run on TRC
+- run on TRC (Done)
+- jax profiler for benchcollectives (done)
+- jax profiler benchmark code (done)
+- 4x4 benchmatmul ()

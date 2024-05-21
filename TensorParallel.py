@@ -151,15 +151,20 @@ def Systolic_OS(Xij, Wij, row, col, K, B): #smallest block size B
     W_split = Wij.reshape(Wij.shape[0]//(K*B),K,B, Wij.shape[1])
     x_blocks = lambda i: jax.lax.dynamic_slice_in_dim(X_split, i, 1, 2)
     w_blocks = lambda i: jax.lax.dynamic_slice_in_dim(W_split, i, 1, 1)
-    Xk = jax.lax.all_gather(x_blocks(0), col, tiled=True, axis=1)
-    Wk = jax.lax.all_gather(w_blocks(0), row, tiled=True, axis=0)
+    Xk0 = jax.lax.all_gather(x_blocks(0), col, tiled=True, axis=1)
+    Wk0 = jax.lax.all_gather(w_blocks(0), row, tiled=True, axis=0)
     
-    Yij = Xk.reshape(Xij.shape[0],-1) @ Wk.reshape(-1,Wij.shape[1])
-    for k in range(1,K):
-        Xk = jax.lax.all_gather(x_blocks(k), col, tiled=True, axis=1)
-        Wk = jax.lax.all_gather(w_blocks(k), row, tiled=True, axis=0)
-        Yij += Xk.reshape(Xij.shape[0],-1) @ Wk.reshape(-1,Wij.shape[1])
-    return Yij
+    Yij = jnp.einsum('nikb,ikbo->no',Xk0,Wk0)
+    Xk = jax.lax.all_gather(x_blocks(1), col, tiled=True, axis=1)
+    Wk = jax.lax.all_gather(w_blocks(1), row, tiled=True, axis=0)
+    def body_fn(kk,carry):
+        YY, Xk,Wk = carry
+        YY += jnp.einsum('nikb,ikbo->no',Xk,Wk)
+        Xk2 = jax.lax.all_gather(x_blocks(kk+1), col, tiled=True, axis=1)
+        Wk2 = jax.lax.all_gather(w_blocks(kk+1), row, tiled=True, axis=0)
+        return YY,Xk2,Wk2
+    Yij, Xk, Wk = jax.lax.fori_loop(1,K-1,body_fn,init_val=(Yij,Xk,Wk))
+    return Yij + jnp.einsum('nikb,ikbo->no',Xk,Wk)
 
 def Systolic_IS(Xij, Wji, row, col, K, B): #smallest block size B
     O = Wji.shape[0]*jax.lax.psum(1, row)
@@ -328,12 +333,13 @@ def Cannon_WS(Xji, Wij, row, col, K, B):
     return jax.lax.dynamic_slice_in_dim(Yj, 2*((rowidx-colidx)%N) * B, 2*B, axis=0)
 
 class SPMD:
-    def __init__(self, mesh, algorithm='collective', blocksize=8):
+    def __init__(self, mesh, algorithm='collective', blocksize=8, jit=True):
         self.mesh = mesh
         self.rowaxis = mesh.axis_names[0]
         self.colaxis = mesh.axis_names[1]
         self.spec = P(self.rowaxis,self.colaxis)
         self.blocksize=blocksize
+        self.jit = jit
         if algorithm=='collective':
             self.funcs = {'os':Collective_OS, 'is':Collective_IS, 'ws':Collective_WS}
         elif algorithm=='wang':
@@ -344,17 +350,20 @@ class SPMD:
         else:
             self.funcs = {'os':Systolic_OS, 'is':Systolic_IS, 'ws':Systolic_WS}
     def OS(self, K=8):
-        return jax.jit(partial(shard_map, mesh=self.mesh, in_specs=(self.spec,self.spec),
+        myfunc = partial(shard_map, mesh=self.mesh, in_specs=(self.spec,self.spec),
          out_specs=self.spec)(partial(
-             self.funcs['os'], row=self.rowaxis, col=self.colaxis, K=K,B=self.blocksize)))
+             self.funcs['os'], row=self.rowaxis, col=self.colaxis, K=K,B=self.blocksize))
+        return jax.jit(myfunc) if self.jit else myfunc
     def IS(self, K=8):
-        return jax.jit(partial(shard_map, mesh=self.mesh, in_specs=(self.spec,self.spec),
+        myfunc = partial(shard_map, mesh=self.mesh, in_specs=(self.spec,self.spec),
          out_specs=self.spec)(partial(
-             self.funcs['is'], row=self.rowaxis, col=self.colaxis, K=K,B=self.blocksize)))
+             self.funcs['is'], row=self.rowaxis, col=self.colaxis, K=K,B=self.blocksize))
+        return jax.jit(myfunc) if self.jit else myfunc
     def WS(self, K=8):
-        return jax.jit(partial(shard_map, mesh=self.mesh, in_specs=(self.spec,self.spec),
+        myfunc = partial(shard_map, mesh=self.mesh, in_specs=(self.spec,self.spec),
          out_specs=self.spec)(partial(
-             self.funcs['ws'], row=self.rowaxis, col=self.colaxis, K=K,B=self.blocksize)))
+             self.funcs['ws'], row=self.rowaxis, col=self.colaxis, K=K,B=self.blocksize))
+        return jax.jit(myfunc) if self.jit else myfunc
 
 def Cannon_WS(Xji, Wij, row, col, K, B):
     N = jax.lax.psum(1, col)
@@ -396,6 +405,12 @@ def Cannon_WS(Xji, Wij, row, col, K, B):
     Yj = jax.lax.all_gather(Ykj, row, tiled=True, axis=0)
     return jax.lax.dynamic_slice_in_dim(Yj, 2*((rowidx-colidx)%N) * B, 2*B, axis=0)
 
+def createMultihostMatrix(mesh, sharding, global_shape, dtype=jnp.bfloat16): #only works for 2d
+    local_shape = [global_shape[0]//mesh.devices.shape[0], global_shape[1]]
+    local_buffer = jax.random.normal(jax.random.PRNGKey(jax.process_index()),local_shape, dtype=dtype)
+    local_sharded = jax.device_put(jnp.split(local_buffer,len(mesh.local_devices),axis=1), mesh.local_devices)
+    return jax.make_array_from_single_device_arrays(global_shape,sharding, local_sharded)
+
 if __name__=='__main__':
     '''
     jax.config.update('jax_platform_name', 'cpu')
@@ -424,39 +439,47 @@ if __name__=='__main__':
     print(allclose(Wp,X.transpose()@Y))
     '''
 
-    jax.config.update('jax_platform_name', 'cpu')
-    os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count=16' # Use 16 CPU devices
-    devices = mesh_utils.create_device_mesh((4, 4))
-    mesh = Mesh(devices, axis_names=('x', 'y'))
-    
+    #jax.config.update('jax_platform_name', 'cpu')
+    #os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count=16' # Use 16 CPU devices
     B,S,H,D = (4,128, 48,64)
+
+    jax.config.update('jax_platform_name', 'cpu')
+    os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count=8' # Use 8 CPU devices
+    devices = mesh_utils.create_device_mesh((2, 4))
+    mesh = Mesh(devices, axis_names=('x', 'y'))
     X = jnp.arange( B*S*H*D,dtype=jnp.float32).reshape(B*S, H*D)/(B*S*H*D)
     W = jnp.arange(H*D*4*H*D,dtype=jnp.float32).reshape(H*D, 4*H*D) / (4*H*D*H*D)
     Y = X@W
-
+    myalg = SPMD(mesh,'systolic')
+    
     Xo = jax.device_put(X, NamedSharding(mesh, P('x', 'y')))
     Wo = jax.device_put(W, NamedSharding(mesh, P('x', 'y')))
+
+    '''
+    jax.distributed.initialize()
+
+    colcount = jax.local_device_count()
+    rowcount = jax.device_count() // colcount
+    devices = mesh_utils.create_device_mesh((rowcount,colcount))
+    mesh = Mesh(devices, axis_names=('x','y'))
+    Xo = createMultihostMatrix(mesh, NamedSharding(mesh, P('x', 'y')), [B*S,H*D])
+    Wo = createMultihostMatrix(mesh, NamedSharding(mesh, P('x', 'y')), [H*D,4*H*D])
+    '''
     
-    CanOS = jax.jit(partial(shard_map, mesh=mesh, in_specs=(P('x', 'y'),P('x', 'y')),
-         out_specs=P('x', 'y'))(partial(Cannon_OS, row='x', col='y', K=8,B=8)))
-    Yo = CanOS(X,W)
-    print(allclose(Yo,X@W))
+    
+    myalg = SPMD(mesh,'wang')
+    gspmd = SPMD(mesh,'systolic')
+    my_os = myalg.OS()
+    gspmd_os = gspmd.OS()
+    Yo = my_os(Xo,Wo)
+    print(allclose(Yo,gspmd_os(Xo,Wo)))
 
-    CanIS = jax.jit(partial(shard_map, mesh=mesh, in_specs=(P('x', 'y'),P('x', 'y')),
-         out_specs=P('x', 'y'))(partial(Cannon_IS, row='x', col='y', K=8,B=8)))
-    Xp = CanIS(Yo,Wo)
-    print(allclose(Xp,Y@W.transpose()))
-
-    myalg = SPMD(mesh,'systolic')
-    IS = myalg.IS()
-    Xp = IS(Yo,Wo)
-    print(allclose(Xp,Y@W.transpose()))
-
-    CanWS = jax.jit(partial(shard_map, mesh=mesh, in_specs=(P('x', 'y'),P('x', 'y')),
-         out_specs=P('x', 'y'))(partial(Cannon_WS, row='x', col='y', K=8,B=8)))
-    Wp = CanWS(Xo,Yo)
-    print(allclose(Wp,X.transpose()@Y))
+    my_is=myalg.IS()
+    gspmd_is = gspmd.IS()
+    Xp = my_is(Yo,Wo)
+    print(allclose(Xp,gspmd_is(Yo,Wo)))
 
     WS = myalg.WS()
+    gspmd_ws = gspmd.WS()
     Wp2 = WS(Xo,Yo)
-    print(allclose(Wp2,X.transpose()@Y))
+    print(allclose(Wp2,gspmd_ws(Xo,Yo)))
