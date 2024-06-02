@@ -9,7 +9,7 @@ from jax.sharding import NamedSharding
 from jax.experimental import mesh_utils
 from jax.experimental.shard_map import shard_map
 from jax.tree_util import tree_map, tree_all
-import timeit
+import sys
 
 
 
@@ -47,14 +47,15 @@ def Wang_OS(Xij, Wij, row, col, K, B):
 
     out_block  =  x_lo @ w_blocks(idx, 0)
     out_block +=  x_hi @ w_blocks(idx, 1)
-
+    x_lo = shift_up(x_lo)
+    x_hi = shift_dn(x_hi)
     def body_fn(ii,carry, myidx, mysize):
         low,high,oblock = carry
-        low = shift_up(low)
-        high = shift_dn(high)
+        low2 = shift_up(low)
+        high2 = shift_dn(high)
         oblock +=  low @ w_blocks((myidx - ii) % mysize, 0)
         oblock +=  high @ w_blocks((myidx + ii) % mysize, 1)
-        return (low,high,oblock)
+        return (low2,high2,oblock)
     mybody = partial(body_fn, myidx=idx, mysize=size)
     return jax.lax.fori_loop(1,size,mybody,init_val=(x_lo,x_hi,out_block))[2]
 
@@ -73,14 +74,15 @@ def Wang_IS(Xij, Wji, row, col, K, B):
 
     y_lo  = jnp.einsum('bi,oi->bo',Xij,w_blocks((idx-1)%size, 0))
     y_hi  = jnp.einsum('bi,oi->bo',Xij, w_blocks((idx+1)%size, 1))
+    
     def body_fn(ii,carry, myidx, mysize):
         low,high = carry
         low = shift_up(low)
         high = shift_dn(high)
-        low += jnp.einsum('bi,oi->bo',Xij, w_blocks((myidx - ii - 1) % mysize, 0))
+        lo = jnp.einsum('bi,oi->bo',Xij, w_blocks((myidx - ii-1) % mysize, 0))
         
-        high += jnp.einsum('bi,oi->bo',Xij, w_blocks((myidx + ii + 1) % mysize, 1))
-        return (low,high)
+        hi = jnp.einsum('bi,oi->bo',Xij, w_blocks((myidx + ii +1) % mysize, 1))
+        return (low+lo, high+hi)
     mybody = partial(body_fn, myidx=idx, mysize=size)
     
     y_lo,y_hi =  jax.lax.fori_loop(1,size,mybody,init_val=(y_lo,y_hi))
@@ -104,13 +106,14 @@ def Wang_WS(Xji, Wij, row, col, K, B):
 
         y_lo  =  jnp.einsum('ib,io->bo',x_blocks((idx-1)%size, 0), Wij)
         y_hi  =  jnp.einsum('ib,io->bo',x_blocks((idx+1)%size, 1), Wij)
+        
         def body_fn(ii,carry, myidx, mysize):
             low,high = carry
             low = shift_up(low)
             high = shift_dn(high)
-            low +=  jnp.einsum('ib,io->bo',x_blocks((myidx - ii - 1) % mysize, 0), Wij)
-            high +=  jnp.einsum('ib,io->bo',x_blocks((myidx + ii + 1) % mysize, 1), Wij)
-            return (low,high)
+            lo =  jnp.einsum('ib,io->bo',x_blocks((myidx - ii - 1) % mysize, 0), Wij)
+            hi =  jnp.einsum('ib,io->bo',x_blocks((myidx + ii + 1) % mysize, 1), Wij)
+            return (low+lo,high+hi)
         mybody = partial(body_fn, myidx=idx, mysize=size)
         
         
@@ -130,15 +133,17 @@ def Wang_WS(Xji, Wij, row, col, K, B):
         Yk = jnp.einsum('ib,io->bo',Xji, Wij)
         Yj = jax.lax.dynamic_update_slice_in_dim(Yj, Yk, 2*((idx)%size)*B, axis=0)
         x_lo, x_hi = jnp.split(Xji, 2, 1)
+        x_lo = shift_up(x_lo)
+        x_hi = shift_dn(x_hi)
         def body_fn(ii,carry, myidx, mysize):
             lo,hi, Yj = carry
-            lo = shift_up(lo)
-            hi = shift_dn(hi)
             Y_lo = jnp.einsum('ib,io->bo',lo, Wij)
             Yj = jax.lax.dynamic_update_slice_in_dim(Yj, Y_lo, 2*((idx-ii)%size)*B, axis=0)
             Y_hi = jnp.einsum('ib,io->bo',hi, Wij)
             Yj = jax.lax.dynamic_update_slice_in_dim(Yj, Y_hi, 2*((idx+ii)%size)*B+B, axis=0)
-            return (lo,hi,Yj)
+            lo2 = shift_up(lo)
+            hi2 = shift_dn(hi)
+            return (lo2,hi2,Yj)
         mybody = partial(body_fn, myidx=idx, mysize=size)
         Yj = jax.lax.fori_loop(1,size,mybody,init_val=(x_lo,x_hi,Yj))[2]
         return jax.lax.psum_scatter(Yj, row, scatter_dimension=0, tiled=True)
@@ -229,26 +234,29 @@ def Cannon_OS(Xij, Wij, row, col, K, B):
     Wj = jax.lax.all_gather(Wij, row, tiled=True, axis=0)
     
     B = Xi.shape[1] // N // 2
-    print(B)
+    #print(B)
     k = (colidx+rowidx)%N
     x_lo = jax.lax.dynamic_slice_in_dim(Xi, (2*k) * B, B, 1)
     x_hi = jax.lax.dynamic_slice_in_dim(Xi, (2*k+1) * B, B, 1)
     w_lo = jax.lax.dynamic_slice_in_dim(Wj, (2*k) * B, B, 0)
     w_hi = jax.lax.dynamic_slice_in_dim(Wj, (2*k+1) * B, B, 0)
-    print(x_lo.shape)
-    print(w_hi.shape)
+    #print(x_lo.shape)
+    #print(w_hi.shape)
     out_block  =  x_lo @ w_lo
     out_block +=  x_hi @ w_hi
-
+    w_lo = shift_dn(w_lo)
+    w_hi = shift_up(w_hi)
+    x_lo = shift_l(x_lo)
+    x_hi = shift_r(x_hi)
     def body_fn(ii, carry):
         xl,xh,wl,wh,oblock = carry
-        wl = shift_dn(wl)
-        wh = shift_up(wh)
-        xl = shift_l(xl)
-        xh = shift_r(xh)
+        wl2 = shift_dn(wl)
+        wh2 = shift_up(wh)
+        xl2 = shift_l(xl)
+        xh2 = shift_r(xh)
         oblock += xl @ wl
         oblock += xh @ wh
-        return (xl,xh,wl,wh,oblock)
+        return (xl2,xh2,wl2,wh2,oblock)
     
     return jax.lax.fori_loop(1,N,body_fn,init_val=(x_lo,x_hi,w_lo,w_hi,out_block))[4]
 
@@ -274,20 +282,22 @@ def Cannon_IS(Xij, Wji, row, col, K, B):
     
     y_lo  = jnp.einsum('bi,oi->bo',Xij,w_lo)
     y_hi  = jnp.einsum('bi,oi->bo',Xij,w_hi)
-    y_lo = shift_l(y_lo)
-    y_hi = shift_r(y_hi)
+    
     def body_fn(ii, carry):
         wl,wh,yl,yh = carry
         
         wl = shift_dn(wl)
         wh = shift_up(wh)
-        yl = yl + jnp.einsum('bi,oi->bo',Xij,wl)
-        yh = yh + jnp.einsum('bi,oi->bo',Xij,wh)
         yl = shift_l(yl)
         yh = shift_r(yh)
-        return (wl,wh,yl,yh)
+        lo = jnp.einsum('bi,oi->bo',Xij,wl)
+        hi = jnp.einsum('bi,oi->bo',Xij,wh)
+        
+        return (wl,wh,yl+lo,yh+hi)
     
     _,_,y_lo,y_hi = jax.lax.fori_loop(1,N,body_fn,init_val=(w_lo,w_hi,y_lo,y_hi))
+    y_lo = shift_l(y_lo)
+    y_hi = shift_r(y_hi)
     Yik = jnp.concatenate([y_lo,y_hi],axis=1)
     Yi = jax.lax.all_gather(Yik, col, tiled=True, axis=1)
     return jax.lax.dynamic_slice_in_dim(Yi, 2*((colidx-rowidx)%N) * B, 2*B, axis=1)
@@ -314,20 +324,21 @@ def Cannon_WS(Xji, Wij, row, col, K, B):
     
     y_lo  = jnp.einsum('ib,io->bo',x_lo,Wij)
     y_hi  = jnp.einsum('ib,io->bo',x_hi,Wij)
-    y_lo = shift_dn(y_lo)
-    y_hi = shift_up(y_hi)
+    
     def body_fn(ii, carry):
         xl,xh,yl,yh = carry
         
         xl = shift_l(xl)
         xh = shift_r(xh)
-        yl += jnp.einsum('ib,io->bo',xl,Wij)
-        yh += jnp.einsum('ib,io->bo',xh,Wij)
         yl = shift_dn(yl)
         yh = shift_up(yh)
-        return (xl,xh,yl,yh)
+        lo = jnp.einsum('ib,io->bo',xl,Wij)
+        hi = jnp.einsum('ib,io->bo',xh,Wij)
+        return (xl,xh,yl+lo,yh+hi)
     
     _,_,y_lo,y_hi = jax.lax.fori_loop(1,N,body_fn,init_val=(x_lo,x_hi,y_lo,y_hi))
+    y_lo = shift_dn(y_lo)
+    y_hi = shift_up(y_hi)
     Ykj = jnp.concatenate([y_lo,y_hi],axis=0)
     Yj = jax.lax.all_gather(Ykj, row, tiled=True, axis=0)
     return jax.lax.dynamic_slice_in_dim(Yj, 2*((rowidx-colidx)%N) * B, 2*B, axis=0)
@@ -444,13 +455,13 @@ if __name__=='__main__':
     B,S,H,D = (4,128, 48,64)
 
     jax.config.update('jax_platform_name', 'cpu')
-    os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count=8' # Use 8 CPU devices
-    devices = mesh_utils.create_device_mesh((2, 4))
+    os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count=16' # Use 8 CPU devices
+    devices = mesh_utils.create_device_mesh((4, 4))
     mesh = Mesh(devices, axis_names=('x', 'y'))
     X = jnp.arange( B*S*H*D,dtype=jnp.float32).reshape(B*S, H*D)/(B*S*H*D)
     W = jnp.arange(H*D*4*H*D,dtype=jnp.float32).reshape(H*D, 4*H*D) / (4*H*D*H*D)
     Y = X@W
-    myalg = SPMD(mesh,'systolic')
+    myalg = SPMD(mesh,'wang')
     
     Xo = jax.device_put(X, NamedSharding(mesh, P('x', 'y')))
     Wo = jax.device_put(W, NamedSharding(mesh, P('x', 'y')))
@@ -467,8 +478,8 @@ if __name__=='__main__':
     '''
     
     
-    myalg = SPMD(mesh,'wang')
-    gspmd = SPMD(mesh,'systolic')
+    myalg = SPMD(mesh,sys.argv[1])
+    gspmd = SPMD(mesh,'collective')
     my_os = myalg.OS()
     gspmd_os = gspmd.OS()
     Yo = my_os(Xo,Wo)

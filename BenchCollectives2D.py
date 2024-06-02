@@ -25,7 +25,7 @@ def SendRecv_(buf, axis):
                             perm=[(i, (i + 1) % ndev) for i in range(ndev)])
     return shift_up(buf)
 
-def repeatBench(func, args, repeat=10, warmup=10):
+def repeatBench(func, args, repeat=5, warmup=5):
     benchtimes = []
     print(args.shape)
     for _ in range(warmup):
@@ -47,10 +47,11 @@ def repeatBench(func, args, repeat=10, warmup=10):
         benchtimes.append((endtime - starttime)/10)
     return benchtimes
 
-def createMultihostMatrix(mesh, sharding, global_shape): #only works for 2d
-    local_shape = [global_shape[0]//mesh.devices.shape[0], global_shape[1]]
+def createMultihostMatrix(mesh, sharding, local_shape): #only works for 2d
+    local_buffer_shape = [local_shape[0], local_shape[1]*len(mesh.local_devices)]
+    global_shape = [local_shape[0]*mesh.devices.shape[0], local_shape[1]*mesh.devices.shape[1]]
     print(local_shape)
-    local_buffer = jax.random.normal(jax.random.PRNGKey(jax.process_index()),local_shape, dtype=jnp.bfloat16)
+    local_buffer = jax.random.normal(jax.random.PRNGKey(jax.process_index()),local_buffer_shape, dtype=jnp.bfloat16)
     local_sharded = jax.device_put(jnp.split(local_buffer,len(mesh.local_devices),axis=1), mesh.local_devices)
     return jax.make_array_from_single_device_arrays(global_shape,sharding, local_sharded)
 
@@ -61,12 +62,15 @@ if __name__=='__main__':
     print("Local device count: {}".format(jax.local_device_count()))
     colcount = jax.local_device_count()
     rowcount = jax.device_count() // colcount
+    if jax.device_count() == 32:
+        colcount = 8
+        rowcount = 4
     print(jax.devices())
     print(jax.local_devices())
     devices = mesh_utils.create_device_mesh((rowcount,colcount))
     mesh = Mesh(devices, axis_names=('x','y'))
     print("Running benchmark on {} devices.".format((rowcount,colcount)))
-    data_sizes = [4096*2**i for i in range(16)]
+    data_sizes = [4096*2**i for i in range(15)]
     myspec = P('x','y')
     print("Along dim=0")
     AG_y = jax.jit(partial(shard_map, mesh=mesh, in_specs=myspec,
@@ -75,12 +79,14 @@ if __name__=='__main__':
          out_specs=myspec)(partial(RS_, axis='y', dim=0)))
     SendRecv_y = jax.jit(partial(shard_map, mesh=mesh, in_specs=myspec,
          out_specs=myspec)(partial(SendRecv_, axis='y')))
+    benchtag = "{}_{}x{}".format(func_to_bench, rowcount, colcount)
+    jax.profiler.start_trace("/tmp/tensorboard/"+benchtag)
     if func_to_bench == 'allgather':
         print("\nAllgather_y: dim=0")
         for dsize in data_sizes:
             #buffer = jnp.ones([rowcount*dsize//4096, colcount*4096], dtype=jnp.bfloat16)
             #buf_split = jax.device_put(buffer, NamedSharding(mesh, myspec))
-            buf_split = createMultihostMatrix(mesh, NamedSharding(mesh, myspec),[rowcount*dsize//4096, colcount*4096])
+            buf_split = createMultihostMatrix(mesh, NamedSharding(mesh, myspec),[dsize//4096, 4096])
             benchtimes = repeatBench(AG_y, buf_split)
             print("Size: {}KB,\t Time: {:.4f}+-{:.4f}ms".format(2*dsize//1024, mean(benchtimes)*1000, stdev(benchtimes)*1000))
         
@@ -90,7 +96,7 @@ if __name__=='__main__':
         for dsize in data_sizes:
             #buffer = jnp.ones([rowcount*dsize//4096, colcount*4096], dtype=jnp.bfloat16)
             #buf_split = jax.device_put(buffer, NamedSharding(mesh, myspec))
-            buf_split = createMultihostMatrix(mesh, NamedSharding(mesh, myspec),[rowcount*dsize//4096, colcount*4096])
+            buf_split = createMultihostMatrix(mesh, NamedSharding(mesh, myspec),[dsize//4096, 4096])
             benchtimes = repeatBench(AG_y, buf_split)
             print("Size: {}KB,\t Time: {:.4f}+-{:.4f}ms".format(2*dsize//1024, mean(benchtimes)*1000, stdev(benchtimes)*1000))
         
@@ -100,7 +106,7 @@ if __name__=='__main__':
         for dsize in data_sizes:
             #buffer = jnp.ones([rowcount*dsize//4096, colcount*4096], dtype=jnp.bfloat16)
             #buf_split = jax.device_put(buffer, NamedSharding(mesh, myspec))
-            buf_split = createMultihostMatrix(mesh, NamedSharding(mesh, myspec),[rowcount*dsize//4096, colcount*4096])
+            buf_split = createMultihostMatrix(mesh, NamedSharding(mesh, myspec),[dsize//4096, 4096])
             benchtimes = repeatBench(AG_x, buf_split)
             print("Size: {}KB,\t Time: {:.4f}+-{:.4f}ms".format(2*dsize//1024, mean(benchtimes)*1000, stdev(benchtimes)*1000))
         AG_x = jax.jit(partial(shard_map, mesh=mesh, in_specs=myspec,
@@ -109,7 +115,7 @@ if __name__=='__main__':
         for dsize in data_sizes:
             #buffer = jnp.ones([rowcount*dsize//4096, colcount*4096], dtype=jnp.bfloat16)
             #buf_split = jax.device_put(buffer, NamedSharding(mesh, myspec))
-            buf_split = createMultihostMatrix(mesh, NamedSharding(mesh, myspec),[rowcount*dsize//4096, colcount*4096])
+            buf_split = createMultihostMatrix(mesh, NamedSharding(mesh, myspec),[dsize//4096, 4096])
             benchtimes = repeatBench(AG_x, buf_split)
             print("Size: {}KB,\t Time: {:.4f}+-{:.4f}ms".format(2*dsize//1024, mean(benchtimes)*1000, stdev(benchtimes)*1000))
         
@@ -119,7 +125,7 @@ if __name__=='__main__':
         for dsize in data_sizes:
             #buffer = jnp.ones([rowcount*dsize//4096, colcount*colcount*4096], dtype=jnp.bfloat16)
             #buf_split = jax.device_put(buffer, NamedSharding(mesh, myspec))
-            buf_split = createMultihostMatrix(mesh, NamedSharding(mesh, myspec),[colcount*rowcount*dsize//4096, colcount*4096])
+            buf_split = createMultihostMatrix(mesh, NamedSharding(mesh, myspec),[colcount*dsize//4096, 4096])
             benchtimes = repeatBench(RS_y, buf_split)
             print("Size: {}KB,\t Time: {:.4f}+-{:.4f}ms".format(2*dsize//1024, mean(benchtimes)*1000, stdev(benchtimes)*1000))
         RS_y = jax.jit(partial(shard_map, mesh=mesh, in_specs=myspec,
@@ -128,7 +134,7 @@ if __name__=='__main__':
         for dsize in data_sizes:
             #buffer = jnp.ones([rowcount*dsize//4096, colcount*colcount*4096], dtype=jnp.bfloat16)
             #buf_split = jax.device_put(buffer, NamedSharding(mesh, myspec))
-            buf_split = createMultihostMatrix(mesh, NamedSharding(mesh, myspec),[rowcount*dsize//4096, colcount*colcount*4096])
+            buf_split = createMultihostMatrix(mesh, NamedSharding(mesh, myspec),[dsize//4096, colcount*4096])
             benchtimes = repeatBench(RS_y, buf_split)
             print("Size: {}KB,\t Time: {:.4f}+-{:.4f}ms".format(2*dsize//1024, mean(benchtimes)*1000, stdev(benchtimes)*1000))
         RS_x = jax.jit(partial(shard_map, mesh=mesh, in_specs=myspec,
@@ -137,7 +143,7 @@ if __name__=='__main__':
         for dsize in data_sizes:
             #buffer = jnp.ones([rowcount*dsize//4096, colcount*colcount*4096], dtype=jnp.bfloat16)
             #buf_split = jax.device_put(buffer, NamedSharding(mesh, myspec))
-            buf_split = createMultihostMatrix(mesh, NamedSharding(mesh, myspec),[rowcount*rowcount*dsize//4096, colcount*4096])
+            buf_split = createMultihostMatrix(mesh, NamedSharding(mesh, myspec),[rowcount*dsize//4096, 4096])
             benchtimes = repeatBench(RS_x, buf_split)
             print("Size: {}KB,\t Time: {:.4f}+-{:.4f}ms".format(2*dsize//1024, mean(benchtimes)*1000, stdev(benchtimes)*1000))
         RS_x = jax.jit(partial(shard_map, mesh=mesh, in_specs=myspec,
@@ -146,7 +152,7 @@ if __name__=='__main__':
         for dsize in data_sizes:
             #buffer = jnp.ones([rowcount*dsize//4096, colcount*colcount*4096], dtype=jnp.bfloat16)
             #buf_split = jax.device_put(buffer, NamedSharding(mesh, myspec))
-            buf_split = createMultihostMatrix(mesh, NamedSharding(mesh, myspec),[rowcount*dsize//4096, rowcount*colcount*4096])
+            buf_split = createMultihostMatrix(mesh, NamedSharding(mesh, myspec),[dsize//4096, rowcount*4096])
             benchtimes = repeatBench(RS_x, buf_split)
             print("Size: {}KB,\t Time: {:.4f}+-{:.4f}ms".format(2*dsize//1024, mean(benchtimes)*1000, stdev(benchtimes)*1000))
         
@@ -157,17 +163,9 @@ if __name__=='__main__':
         for dsize in data_sizes:
             #buffer = jnp.ones([rowcount*dsize//4096, colcount*4096], dtype=jnp.bfloat16)
             #buf_split = jax.device_put(buffer, NamedSharding(mesh, myspec))
-            buf_split = createMultihostMatrix(mesh, NamedSharding(mesh, myspec),[rowcount*dsize//4096, colcount*4096])
+            buf_split = createMultihostMatrix(mesh, NamedSharding(mesh, myspec),[dsize//4096, 4096])
             benchtimes = repeatBench(SendRecv_y, buf_split)
             print("Size: {}KB,\t Time: {:.4f}+-{:.4f}ms".format(2*dsize//1024, mean(benchtimes)*1000, stdev(benchtimes)*1000))
-        
-        
-
-        
-        
-
-        
-
 
         print("Along dim=0")
         
@@ -192,7 +190,7 @@ if __name__=='__main__':
         
         SendRecv_x = jax.jit(partial(shard_map, mesh=mesh, in_specs=myspec,
             out_specs=myspec)(partial(SendRecv_, axis='x')))
-        
+    jax.profiler.stop_trace()
         
 
         

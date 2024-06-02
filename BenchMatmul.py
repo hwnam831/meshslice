@@ -17,14 +17,15 @@ import time
 import sys
 
 if __name__ == '__main__':
-    B=32
+    jax.distributed.initialize()
+    print("Global device count: {}".format(jax.device_count()))
+    print("Local device count: {}".format(jax.local_device_count()))
+    B=jax.device_count()
     S=2048
     H=96
     D=128
     alg = sys.argv[1]
-    jax.distributed.initialize()
-    print("Global device count: {}".format(jax.device_count()))
-    print("Local device count: {}".format(jax.local_device_count()))
+    
     colcount = jax.local_device_count()
     rowcount = jax.device_count() // colcount
     #print(jax.devices())

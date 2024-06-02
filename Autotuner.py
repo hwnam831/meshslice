@@ -14,9 +14,9 @@ from CostModel import DeviceMesh
 #bws = {'allgather':33.224e9, 'reducescatter':31.73e9, 'sendrecv':36.3e9}
 #base_overheads = {'allgather':5e-5, 'reducescatter':5e-5, 'sendrecv':5e-5}
 
-latencies = {'allgather':1e-5, 'reducescatter':1e-5, 'sendrecv':1e-5}
-bws = {'allgather':43.224e9, 'reducescatter':41.73e9, 'sendrecv':46.3e9}
-base_overheads = {'allgather':2e-5, 'reducescatter':2e-5, 'sendrecv':2e-5}
+latencies = {'allgather':1.3e-5, 'reducescatter':7e-6, 'sendrecv':5e-5}
+bws = {'allgather':(27.472e9, 79.751e9), 'reducescatter':(37.506e9, 63.167e9), 'sendrecv':(38.801e9, 35.224e9)}
+base_overheads = {'allgather':13e-6, 'reducescatter':26e-6, 'sendrecv':13e-6}
 
 class FFLayerModel:
     def __init__(self, B,I,O, dataflow=None, transpose=False):
@@ -26,7 +26,7 @@ class FFLayerModel:
         self.transpose = False
         if dataflow in ['os','ws','is']:
             self.dataflow=dataflow
-        elif O>=I and B>=I:
+        elif O>I and B>=I:
             self.dataflow = 'os'
         elif I>=O and B>=O:
             self.dataflow = 'is'
@@ -41,30 +41,30 @@ class FFLayerModel:
             if self.transpose:
                 input_traffic = 2*self.bsize*self.in_dim*(mesh.shape[0]-1)
                 weight_traffic = 2*self.in_dim*self.out_dim*(mesh.shape[1]-1)
-            fwtime = max(input_traffic/mesh.bws['allgather'], weight_traffic/mesh.bws['allgather'])
-            bdtime = max(input_traffic/mesh.bws['reducescatter'], weight_traffic/mesh.bws['allgather'])
-            bwtime = max(input_traffic/mesh.bws['allgather'], weight_traffic/mesh.bws['reducescatter'])
-            return (fwtime + bdtime + bwtime)/(mesh.shape[0]*mesh.shape[1])/2 #bidirectional
+            fwtime = max(input_traffic/mesh.bws['allgather'][1], weight_traffic/mesh.bws['allgather'][0])
+            bdtime = max(input_traffic/mesh.bws['reducescatter'][1], weight_traffic/mesh.bws['allgather'][0])
+            bwtime = max(input_traffic/mesh.bws['allgather'][1], weight_traffic/mesh.bws['reducescatter'][0])
+            return (fwtime + bdtime + bwtime)/(mesh.shape[0]*mesh.shape[1])
         elif self.dataflow == 'is':
             output_traffic = 2*self.bsize*self.out_dim*(mesh.shape[1]-1)
             weight_traffic = 2*self.in_dim*self.out_dim*(mesh.shape[0]-1)
             if self.transpose:
                 output_traffic = 2*self.bsize*self.out_dim*(mesh.shape[0]-1)
                 weight_traffic = 2*self.in_dim*self.out_dim*(mesh.shape[1]-1)
-            fwtime = max(weight_traffic/mesh.bws['allgather'], output_traffic/mesh.bws['reducescatter'])
-            bdtime = max(weight_traffic/mesh.bws['allgather'], output_traffic/mesh.bws['allgather'])
-            bwtime = max(weight_traffic/mesh.bws['reducescatter'], output_traffic/mesh.bws['allgather'])
-            return (fwtime + bdtime + bwtime)/(mesh.shape[0]*mesh.shape[1])/2 #bidirectional
+            fwtime = max(weight_traffic/mesh.bws['allgather'][0], output_traffic/mesh.bws['reducescatter'][1])
+            bdtime = max(weight_traffic/mesh.bws['allgather'][0], output_traffic/mesh.bws['allgather'][1])
+            bwtime = max(weight_traffic/mesh.bws['reducescatter'][0], output_traffic/mesh.bws['allgather'][1])
+            return (fwtime + bdtime + bwtime)/(mesh.shape[0]*mesh.shape[1])
         else: #ws
             input_traffic = 2*self.bsize*self.in_dim*(mesh.shape[1]-1)
             output_traffic = 2*self.bsize*self.out_dim*(mesh.shape[0]-1)
             if self.transpose:
                 input_traffic = 2*self.bsize*self.in_dim*(mesh.shape[0]-1)
                 output_traffic = 2*self.bsize*self.out_dim*(mesh.shape[1]-1)
-            fwtime = max(input_traffic/mesh.bws['allgather'], output_traffic/mesh.bws['reducescatter'])
-            bdtime = max(input_traffic/mesh.bws['reducescatter'], output_traffic/mesh.bws['allgather'])
-            bwtime = max(input_traffic/mesh.bws['allgather'], output_traffic/mesh.bws['allgather'])
-            return (fwtime + bdtime + bwtime)/(mesh.shape[0]*mesh.shape[1])/2 #bidirectional
+            fwtime = max(input_traffic/mesh.bws['allgather'][0], output_traffic/mesh.bws['reducescatter'][1])
+            bdtime = max(input_traffic/mesh.bws['reducescatter'][0], output_traffic/mesh.bws['allgather'][1])
+            bwtime = max(input_traffic/mesh.bws['allgather'][0], output_traffic/mesh.bws['allgather'])
+            return (fwtime + bdtime + bwtime)/(mesh.shape[0]*mesh.shape[1])
     def totalLatency(self, mesh:DeviceMesh, K):
         
         if self.dataflow == 'os':
@@ -114,30 +114,30 @@ class FFLayerModel:
             if self.transpose:
                 input_traffic = 2*self.bsize*self.in_dim*(mesh.shape[0]-1)
                 weight_traffic = 2*self.in_dim*self.out_dim*(mesh.shape[1]-1)
-            fwtime = max(input_traffic/mesh.bws['allgather'], weight_traffic/mesh.bws['allgather'])
-            bdtime = (input_traffic/mesh.bws['reducescatter']+ weight_traffic/mesh.bws['allgather'])
-            bwtime = (input_traffic/mesh.bws['allgather']+ weight_traffic/mesh.bws['reducescatter'])
-            return (fwtime + bdtime + bwtime)/(mesh.shape[0]*mesh.shape[1])/K/2 #bidirectional
+            fwtime = max(input_traffic/mesh.bws['allgather'][1], weight_traffic/mesh.bws['allgather'][0])
+            bdtime = (input_traffic/mesh.bws['reducescatter'][1]+ weight_traffic/mesh.bws['allgather'][0])
+            bwtime = (input_traffic/mesh.bws['allgather'][1]+ weight_traffic/mesh.bws['reducescatter'][0])
+            return (fwtime + bdtime + bwtime)/(mesh.shape[0]*mesh.shape[1])/K
         elif self.dataflow == 'is':
             output_traffic = 2*self.bsize*self.out_dim*(mesh.shape[1]-1)
             weight_traffic = 2*self.in_dim*self.out_dim*(mesh.shape[0]-1)
             if self.transpose:
                 output_traffic = 2*self.bsize*self.out_dim*(mesh.shape[0]-1)
                 weight_traffic = 2*self.in_dim*self.out_dim*(mesh.shape[1]-1)
-            fwtime = (weight_traffic/mesh.bws['allgather'] + output_traffic/mesh.bws['reducescatter'])
-            bdtime = max(weight_traffic/mesh.bws['allgather'], output_traffic/mesh.bws['allgather'])
-            bwtime = (weight_traffic/mesh.bws['reducescatter'] + output_traffic/mesh.bws['allgather'])
-            return (fwtime + bdtime + bwtime)/(mesh.shape[0]*mesh.shape[1])/K/2 #bidirectional
+            fwtime = (weight_traffic/mesh.bws['allgather'][0] + output_traffic/mesh.bws['reducescatter'][1])
+            bdtime = max(weight_traffic/mesh.bws['allgather'][0], output_traffic/mesh.bws['allgather'][1])
+            bwtime = (weight_traffic/mesh.bws['reducescatter'][0] + output_traffic/mesh.bws['allgather'][1])
+            return (fwtime + bdtime + bwtime)/(mesh.shape[0]*mesh.shape[1])/K
         else: #ws
             input_traffic = 2*self.bsize*self.in_dim*(mesh.shape[1]-1)
             output_traffic = 2*self.bsize*self.out_dim*(mesh.shape[0]-1)
             if self.transpose:
                 input_traffic = 2*self.bsize*self.in_dim*(mesh.shape[0]-1)
                 output_traffic = 2*self.bsize*self.out_dim*(mesh.shape[1]-1)
-            fwtime = (input_traffic/mesh.bws['allgather'] + output_traffic/mesh.bws['reducescatter'])
-            bdtime = (input_traffic/mesh.bws['reducescatter'] + output_traffic/mesh.bws['allgather'])
-            bwtime = max(input_traffic/mesh.bws['allgather'], output_traffic/mesh.bws['allgather'])
-            return (fwtime + bdtime + bwtime)/(mesh.shape[0]*mesh.shape[1])/K/2 #bidirectional
+            fwtime = (input_traffic/mesh.bws['allgather'][1] + output_traffic/mesh.bws['reducescatter'][0])
+            bdtime = (input_traffic/mesh.bws['reducescatter'][1] + output_traffic/mesh.bws['allgather'][0])
+            bwtime = max(input_traffic/mesh.bws['allgather'][1], output_traffic/mesh.bws['allgather'][0])
+            return (fwtime + bdtime + bwtime)/(mesh.shape[0]*mesh.shape[1])/K
     def emulate(self, mesh:DeviceMesh, K):
         if not self.transpose:
             if self.dataflow == 'os':
@@ -249,20 +249,30 @@ def possibleK(B,I,O,meshshape,dataflow):
         kdim = B//mlcm//8
     if kdim%48 == 0:
         return [3,4,6,8,12,16]
+    elif kdim%40 == 0:
+        return [4,5,8,10,20]
     elif kdim%24 == 0:
         return [3,4,6,8,12]
+    elif kdim%20 == 0:
+        return [4,5,10,20]
     elif kdim%16 == 0:
         return [4,8,16]
     elif kdim%12 == 0:
         return [3,4,12]
+    elif kdim%10 == 0:
+        return [5,10]
     elif kdim%8 == 0:
         return [4,8]
     elif kdim%6 == 0:
         return [3,6]
     elif kdim%4 == 0:
         return [4]
+    elif kdim%5 == 0:
+        return [5]
     else:
-        return kdim
+        return [kdim]
+    
+   
 
 #shapes: list of available mesh shapes. Must be a same number of chips
 class Autotuner:
@@ -284,7 +294,7 @@ class Autotuner:
                 inputname = layer['inputs'][0]
                 I = graph.nodes[inputname]['shape'][-1]
                 O = layer['shape'][-1]
-                if O>=I and B>=I:
+                if O>I and B>=I:
                     self.dataflows[lname] = 'os'
                 elif I>=O and B>=O:
                     self.dataflows[lname] = 'is'
@@ -399,9 +409,11 @@ class Autotuner:
                 bestK = klist[0]
                 for k in klist[1:]:
                     curtime = model.emulate(mesh,k)
-                    if curtime > bestTime:
+                    if curtime < bestTime:
                         bestK = K
                         bestTime = curtime
+                    else:
+                        break
                 totaltime += bestTime
                 ksplits[lname] = bestK
         print("FFtime: {}ms".format(totaltime*1000))
@@ -452,30 +464,46 @@ class Autotuner:
             print("Layer: {}\t Dataflow: {}\t Transpose: {}\t ksplit: {}".format(
                 flayer, self.dataflows[flayer], self.transposition[flayer], self.ksplits[flayer]
             ))
-
-            
-
-        
-
-
+import argparse
 
 if __name__ == '__main__':
-    B=128
-    S=2048
-    H=128
-    D=128
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--ksplit', nargs=4, type=int, default=[8,8,8,8])
+    parser.add_argument('--batchsize', type=int, default=-1, help='Default is number of chips')
+    parser.add_argument('--seqlen', type=int, default=2048)
+    parser.add_argument('--nheads', type=int, default=96)
+    parser.add_argument('--headdim', type=int, default=128)
+    parser.add_argument('--nrows', type=int, default=4, help='Number of rows in device mesh. Must be multiple of 4')
+    parser.add_argument('--ncols', type=int, default=4, help='Number of cols in device mesh. Must be multiple of 4')
+    parser.add_argument('--alg', type=str, default='noff', choices=['noff','collective', 'cannon', 'wang', 'systolic'])
+    args = parser.parse_args()
+
+    B = 2*args.nrows*args.ncols if args.batchsize <= 0 else args.batchsize
+    S = args.seqlen
+    H = args.nheads
+    D = args.headdim
+    alg = args.alg
+    NROW = args.nrows
+    NCOL = args.ncols
     K=8
     gpt3 = build_transformerBlock(B,S,H,D)
     gpt3.printGraph()
     computetime = 0
-    computetime += 3* CostModel.estimateMatmul(None,B*S//32,H*D//8,H*D//K)*K
-    computetime += 3* CostModel.estimateMatmul(None,B*S//32,3*H*D//8,H*D//K)*K
-    computetime += 6* CostModel.estimateMatmul(None,B*S//32,4*H*D//8,H*D//K)*K
+    computetime += 3* CostModel.estimateMatmul(None,B*S//NROW,H*D//NCOL,H*D//K)*K
+    computetime += 3* CostModel.estimateMatmul(None,B*S//NROW,3*H*D//NCOL,H*D//K)*K
+    computetime += 6* CostModel.estimateMatmul(None,B*S//NROW,4*H*D//NCOL,H*D//K)*K
     print("Emulated compute time: {}".format(computetime*1000))
     #shapes = [(4,96), (8,48), (12,32), (16,24), (24,16), (32,12), (48,8), (96,4)]
-    shapes = [(4,64), (8,32), (16,16), (32,8), (64,4)]
+    shapes = []
+    currow = 4
+    curcol = NCOL*NROW//4
+    while curcol >= 4:
+        shapes.append((currow, curcol))
+        currow = currow * 2
+        curcol = curcol //2
+    print(shapes)
     tuner = Autotuner(gpt3, shapes)
-    mesh = DeviceMesh((32,8),
+    mesh = DeviceMesh((NROW,NCOL),
                     242*1024**4, bws_per_direction=bws,
                     link_latencies=latencies, base_overheads=base_overheads)
     ffmodel = FFLayerModel(B*S,H*D,4*H*D,'os')
