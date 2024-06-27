@@ -71,7 +71,7 @@ def estimateSkew(mesh, data_shape: tuple, precision):
     time_per_step = data_shape[0]*data_shape[1] * (precision//8) / bw
     return base_overhead + steps * time_per_step + link_latency*steps
 
-def estimateMatmul(mesh, M, N, K, input_precision=jnp.bfloat16, layout='nn', repeat=10):
+def estimateMatmul(mesh, M, N, K, input_precision=jnp.bfloat16, layout='nn', repeat=5):
     #flop_count = M*N*K*2
     #return flop_count/mesh.flops
     

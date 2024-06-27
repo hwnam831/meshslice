@@ -14,7 +14,7 @@ from CostModel import DeviceMesh
 #bws = {'allgather':33.224e9, 'reducescatter':31.73e9, 'sendrecv':36.3e9}
 #base_overheads = {'allgather':5e-5, 'reducescatter':5e-5, 'sendrecv':5e-5}
 
-latencies = {'allgather':1.3e-5, 'reducescatter':7e-6, 'sendrecv':5e-5}
+latencies = {'allgather':5e-6, 'reducescatter':5e-6, 'sendrecv':5e-5}
 bws = {'allgather':(27.472e9, 79.751e9), 'reducescatter':(37.506e9, 63.167e9), 'sendrecv':(38.801e9, 35.224e9)}
 base_overheads = {'allgather':13e-6, 'reducescatter':26e-6, 'sendrecv':13e-6}
 
@@ -248,11 +248,11 @@ def possibleK(B,I,O,meshshape,dataflow):
     else:
         kdim = B//mlcm//8
     if kdim%48 == 0:
-        return [3,4,6,8,12,16]
+        return [3,4,6,8,12,16,24]
     elif kdim%40 == 0:
         return [4,5,8,10,20]
     elif kdim%24 == 0:
-        return [3,4,6,8,12]
+        return [3,4,6,8,12,24]
     elif kdim%20 == 0:
         return [4,5,10,20]
     elif kdim%16 == 0:
@@ -388,7 +388,7 @@ class Autotuner:
             ))
         self.ksplits = bestksplits
         return bestMesh
-    def emulateFFTime(self, meshshape):
+    def emulateFFTime(self, meshshape, sweep=False):
         totaltime = 0.0
         mesh = DeviceMesh(meshshape,
                         242*1024**4, bws_per_direction=bws,
@@ -407,22 +407,39 @@ class Autotuner:
                 klist = possibleK(B,I,O,meshshape, self.dataflows[lname])
                 bestTime = model.emulate(mesh,klist[0])
                 bestK = klist[0]
+                if sweep:
+                    print(klist)
+                    print("FFtime at k={} is {}".format(bestK,bestTime))
                 for k in klist[1:]:
                     curtime = model.emulate(mesh,k)
+                    if sweep:
+                        print("FFtime at k={} is {}".format(k,curtime))
                     if curtime < bestTime:
                         bestK = K
                         bestTime = curtime
                     else:
-                        break
+                        if not sweep:
+                            break
                 totaltime += bestTime
                 ksplits[lname] = bestK
         print("FFtime: {}ms".format(totaltime*1000))
         return totaltime, ksplits
-    def emulatedFinetune(self):
+    def emulatedFinetune(self, sweep=False):
         print("Start emulated finetuning: ")
         curidx = self.shapes.index(self.bestshape)
         print("Trying shape of {}".format(self.bestshape))
         curtime, cursplit = self.emulateFFTime(self.bestshape)
+        if sweep:
+            besttime = curtime
+            bestsplit = cursplit
+            for shp in self.shapes:
+                print("Trying shape of {}".format(shp))
+                curtime, cursplit = self.emulateFFTime(shp, sweep=True)
+                if curtime < besttime:
+                    besttime = curtime
+                    self.bsetshape = shp
+                    bestsplit = cursplit
+            return
         def searchBackward(curidx,curtime,cursplit):
             if curidx == 0:
                 return curidx, cursplit
@@ -476,9 +493,10 @@ if __name__ == '__main__':
     parser.add_argument('--nrows', type=int, default=4, help='Number of rows in device mesh. Must be multiple of 4')
     parser.add_argument('--ncols', type=int, default=4, help='Number of cols in device mesh. Must be multiple of 4')
     parser.add_argument('--alg', type=str, default='noff', choices=['noff','collective', 'cannon', 'wang', 'systolic'])
+    parser.add_argument('--sweep', action='store_true')
     args = parser.parse_args()
 
-    B = 2*args.nrows*args.ncols if args.batchsize <= 0 else args.batchsize
+    B = args.nrows*args.ncols if args.batchsize <= 0 else args.batchsize
     S = args.seqlen
     H = args.nheads
     D = args.headdim
@@ -508,4 +526,4 @@ if __name__ == '__main__':
                     link_latencies=latencies, base_overheads=base_overheads)
     ffmodel = FFLayerModel(B*S,H*D,4*H*D,'os')
     ffmodel.emulate(mesh,4)
-    tuner.emulatedFinetune()
+    tuner.emulatedFinetune(args.sweep)

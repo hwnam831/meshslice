@@ -21,7 +21,7 @@ from ShardedLayers import ShardedAttention, ShardedFFLayer, ShardedLayerNorm
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--ksplit', nargs=4, type=int, default=[8,8,8,8])
-    parser.add_argument('--batchsize', type=int, default=-1, help='Default is number of chips')
+    parser.add_argument('--batchsize', type=int, default=-1, help='Default is 2x number of chips')
     parser.add_argument('--seqlen', type=int, default=2048)
     parser.add_argument('--nheads', type=int, default=96)
     parser.add_argument('--headdim', type=int, default=128)

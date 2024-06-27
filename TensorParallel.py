@@ -92,7 +92,7 @@ def Wang_WS(Xji, Wij, row, col, K, B):
     R = jax.lax.psum(1,row)
     C = jax.lax.psum(1,col)
     #input traffic is bigger, so osplit
-    if C * Xji.shape[0] > R*Wij.shape[1]:
+    if False:
         Xi = jax.lax.all_gather(Xji, col, tiled=True, axis=1)
         size = R
         idx = jax.lax.axis_index(row)
