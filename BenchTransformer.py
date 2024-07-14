@@ -20,14 +20,14 @@ from ShardedLayers import ShardedAttention, ShardedFFLayer, ShardedLayerNorm
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--ksplit', nargs=4, type=int, default=[8,8,8,8])
-    parser.add_argument('--batchsize', type=int, default=-1, help='Default is 2x number of chips')
-    parser.add_argument('--seqlen', type=int, default=2048)
-    parser.add_argument('--nheads', type=int, default=96)
-    parser.add_argument('--headdim', type=int, default=128)
+    parser.add_argument('--ksplit', nargs=4, type=int, default=[8,8,8,8], help='Loop iteration count per FC layer')
+    parser.add_argument('--batchsize', type=int, default=-1, help='Default bathsize number of chips')
+    parser.add_argument('--seqlen', type=int, default=2048, help='Number of tokens per input sequence')
+    parser.add_argument('--nheads', type=int, default=96, help='Number of attention head (gpt3:96, megatron:160)')
+    parser.add_argument('--headdim', type=int, default=128, help='Hidden dimension per attention head')
     parser.add_argument('--nrows', type=int, default=4, help='Number of rows in device mesh. Must be multiple of 4')
     parser.add_argument('--ncols', type=int, default=4, help='Number of cols in device mesh. Must be multiple of 4')
-    parser.add_argument('--alg', type=str, default='noff', choices=['noff','collective', 'cannon', 'wang', 'systolic'])
+    parser.add_argument('--alg', type=str, default='noff', choices=['noff','collective', 'cannon', 'wang', 'meshflow'])
     args = parser.parse_args()
 
     B = args.nrows*args.ncols if args.batchsize <= 0 else args.batchsize
@@ -77,7 +77,7 @@ if __name__ == '__main__':
     else:
         B2 = B * rowcount // NROW
         H2 = H * colcount // NCOL
-        out_proj = ShardedFFLayer(mesh, alg, 'is', args.ksplit[1],
+        out_proj = ShardedFFLayer(mesh, alg, 'ls', args.ksplit[1],
                                  H2*D, H*D)
         inp_op = createMultihostMatrix(mesh, NamedSharding(mesh, P('x','y')), [B2*S,H2*D])
         
@@ -85,7 +85,7 @@ if __name__ == '__main__':
                                  H*D, 4*H2*D)
         inp_ff1 = createMultihostMatrix(mesh, NamedSharding(mesh, P('x','y')), [B2*S,H*D])
 
-        ff2 = ShardedFFLayer(mesh, alg, 'is', args.ksplit[3],
+        ff2 = ShardedFFLayer(mesh, alg, 'ls', args.ksplit[3],
                              4*H2*D, H*D)
         inp_ff2 = createMultihostMatrix(mesh, NamedSharding(mesh, P('x','y')), [B2*S,4*H2*D])
 

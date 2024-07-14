@@ -30,14 +30,14 @@ class ShardedFFLayer:
         self.dataflow = dataflow
         self.ksplit = ksplit
         self.blocksize = blocksize
-        if dataflow == 'is':
+        if dataflow == 'ls':
             self.weight = createMultihostMatrix(mesh, NamedSharding(mesh, P(row,col)), [out_dim, in_dim])
         else:
             self.weight = createMultihostMatrix(mesh, NamedSharding(mesh, P(row,col)), [in_dim, out_dim])
         SPMDbuilder = SPMD(mesh, algorithm, blocksize)
         OS = SPMDbuilder.OS(ksplit)
-        IS = SPMDbuilder.IS(ksplit)
-        WS = SPMDbuilder.WS(ksplit)
+        LS = SPMDbuilder.LS(ksplit)
+        RS = SPMDbuilder.RS(ksplit)
         if dataflow=='os':
             @custom_vjp
             def compute(x, w):
@@ -49,37 +49,33 @@ class ShardedFFLayer:
             def compute_bwd(res, dy):
                 #print('OS compute_bwd')
                 x,w = res
-                dx = IS(dy, w)
-                dw = WS(x, dy)
+                dx = LS(dy, w)
+                dw = RS(x, dy)
                 return (dx, dw)
             compute.defvjp(compute_fwd, compute_bwd)
-        elif dataflow=='is':
+        elif dataflow=='ls':
             @custom_vjp
             def compute(x, w):
-                #print('IS compute func')
-                return IS(x, w)
+                return LS(x, w)
             def compute_fwd(x, w):
                 #print('compute_fwd')
                 return compute(x, w), (x, w)
             def compute_bwd(res, dy):
-                #print('IS compute_bwd')
                 x,w = res
                 dx = OS(dy, w)
-                dw = WS(dy, x)
+                dw = RS(dy, x)
                 return (dx, dw)
             compute.defvjp(compute_fwd, compute_bwd)
-        elif dataflow=='ws':
+        elif dataflow=='rs':
             @custom_vjp
             def compute(x, w):
-                #print('WS compute func')
-                return WS(x, w)
+                return RS(x, w)
             def compute_fwd(x, w):
                 #print('compute_fwd')
                 return compute(x, w), (x, w)
             def compute_bwd(res, dy):
-                #print('WS compute_bwd')
                 x,w = res
-                dx = IS(w, dy)
+                dx = LS(w, dy)
                 dw = OS(x,dy)
                 return (dx, dw)
             compute.defvjp(compute_fwd, compute_bwd)
@@ -163,7 +159,7 @@ class ShardedAttention:
         self.forward = jax.jit(_attn)
     
 class TransformerBlock:
-    def __init__(self, mesh, S,H,D, dataflows, alg='systolic', ksplits=[4,4,4,4]):
+    def __init__(self, mesh, S,H,D, dataflows, alg='meshflow', ksplits=[4,4,4,4]):
         self.mesh = mesh
         self.norm1 = ShardedLayerNorm(mesh, H*D)
         self.in_proj = ShardedFFLayer(mesh, alg, dataflows[0], ksplits[0], H*D, 3*H*D)
@@ -211,7 +207,7 @@ if __name__ == '__main__':
     x = createMultihostMatrix(mesh, NamedSharding(mesh, P('x','y')), [B*S,H*D])
     dy = createMultihostMatrix(mesh, NamedSharding(mesh, P('x','y')), [B*S,H*D])
     
-    model = TransformerBlock(mesh, S, H, D, dataflows=['os','os','os','is'], alg=alg)
+    model = TransformerBlock(mesh, S, H, D, dataflows=['os','os','os','ls'], alg=alg)
     out = model.forward(x)
     grads = model.backward(dy)
     out.block_until_ready()

@@ -1,4 +1,4 @@
-gcloud compute tpus tpu-vm ssh tpusinglenode --command="\
+gcloud compute tpus tpu-vm ssh $1 --command="\
 python Autotuner.py --nrows 8 --ncols 4 --batchsize 32 > gpt3-32.log;\
 python Autotuner.py --nrows 8 --ncols 8 --batchsize 64 > gpt3-64.log;\
 python Autotuner.py --nrows 16 --ncols 8 --batchsize 128 > gpt3-128.log;\

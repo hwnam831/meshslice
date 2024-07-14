@@ -24,14 +24,14 @@ class FFLayerModel:
         self.in_dim = I
         self.out_dim = O
         self.transpose = False
-        if dataflow in ['os','ws','is']:
+        if dataflow in ['os','rs','ls']:
             self.dataflow=dataflow
         elif O>I and B>=I:
             self.dataflow = 'os'
         elif I>=O and B>=O:
-            self.dataflow = 'is'
+            self.dataflow = 'ls'
         else: #weight is the biggest
-            self.dataflow = 'ws'
+            self.dataflow = 'rs'
         self.transpose = transpose
     def totalTrafficTime(self, mesh:DeviceMesh):
         
@@ -45,7 +45,7 @@ class FFLayerModel:
             bdtime = max(input_traffic/mesh.bws['reducescatter'][1], weight_traffic/mesh.bws['allgather'][0])
             bwtime = max(input_traffic/mesh.bws['allgather'][1], weight_traffic/mesh.bws['reducescatter'][0])
             return (fwtime + bdtime + bwtime)/(mesh.shape[0]*mesh.shape[1])
-        elif self.dataflow == 'is':
+        elif self.dataflow == 'ls':
             output_traffic = 2*self.bsize*self.out_dim*(mesh.shape[1]-1)
             weight_traffic = 2*self.in_dim*self.out_dim*(mesh.shape[0]-1)
             if self.transpose:
@@ -80,7 +80,7 @@ class FFLayerModel:
             bwtime = K*max(dist_i*mesh.link_latencies['allgather'] + mesh.base_overheads['allgather'],
                            dist_w*mesh.link_latencies['reducescatter'] + mesh.base_overheads['reducescatter'])
             return (fwtime + bdtime + bwtime)
-        elif self.dataflow == 'is':
+        elif self.dataflow == 'ls':
             dist_o = mesh.shape[1]-1
             dist_w = mesh.shape[0]-1
             if self.transpose:
@@ -118,7 +118,7 @@ class FFLayerModel:
             bdtime = (input_traffic/mesh.bws['reducescatter'][1]+ weight_traffic/mesh.bws['allgather'][0])
             bwtime = (input_traffic/mesh.bws['allgather'][1]+ weight_traffic/mesh.bws['reducescatter'][0])
             return (fwtime + bdtime + bwtime)/(mesh.shape[0]*mesh.shape[1])/K
-        elif self.dataflow == 'is':
+        elif self.dataflow == 'ls':
             output_traffic = 2*self.bsize*self.out_dim*(mesh.shape[1]-1)
             weight_traffic = 2*self.in_dim*self.out_dim*(mesh.shape[0]-1)
             if self.transpose:
@@ -141,30 +141,30 @@ class FFLayerModel:
     def emulate(self, mesh:DeviceMesh, K):
         if not self.transpose:
             if self.dataflow == 'os':
-                fwtime = CostModel.Systolic_OS(mesh, self.bsize, self.out_dim, self.in_dim, K)
-                bdtime = CostModel.Systolic_IS(mesh, self.bsize, self.in_dim, self.out_dim, K)
-                bwtime = CostModel.Systolic_WS(mesh, self.in_dim, self.out_dim, self.bsize, K)
-            elif self.dataflow == 'is':
-                fwtime = CostModel.Systolic_IS(mesh, self.bsize, self.out_dim, self.in_dim, K)
-                bdtime = CostModel.Systolic_OS(mesh, self.bsize, self.in_dim, self.out_dim, K)
-                bwtime = CostModel.Systolic_WS(mesh, self.out_dim, self.in_dim, self.bsize, K)
+                fwtime = CostModel.MeshFlow_OS(mesh, self.bsize, self.out_dim, self.in_dim, K)
+                bdtime = CostModel.MeshFlow_LS(mesh, self.bsize, self.in_dim, self.out_dim, K)
+                bwtime = CostModel.MeshFlow_RS(mesh, self.in_dim, self.out_dim, self.bsize, K)
+            elif self.dataflow == 'ls':
+                fwtime = CostModel.MeshFlow_LS(mesh, self.bsize, self.out_dim, self.in_dim, K)
+                bdtime = CostModel.MeshFlow_OS(mesh, self.bsize, self.in_dim, self.out_dim, K)
+                bwtime = CostModel.MeshFlow_RS(mesh, self.out_dim, self.in_dim, self.bsize, K)
             else: #ws
-                fwtime = CostModel.Systolic_WS(mesh, self.bsize, self.out_dim, self.in_dim, K)
-                bdtime = CostModel.Systolic_IS(mesh, self.in_dim, self.bsize, self.out_dim, K)
-                bwtime = CostModel.Systolic_OS(mesh, self.in_dim, self.out_dim, self.bsize, K)
+                fwtime = CostModel.MeshFlow_RS(mesh, self.bsize, self.out_dim, self.in_dim, K)
+                bdtime = CostModel.MeshFlow_LS(mesh, self.in_dim, self.bsize, self.out_dim, K)
+                bwtime = CostModel.MeshFlow_OS(mesh, self.in_dim, self.out_dim, self.bsize, K)
         else: #transposed versions
             if self.dataflow == 'os':
-                fwtime = CostModel.Systolic_OS(mesh, self.out_dim, self.bsize, self.in_dim, K)
-                bdtime = CostModel.Systolic_WS(mesh, self.in_dim, self.bsize, self.out_dim, K)
-                bwtime = CostModel.Systolic_IS(mesh, self.out_dim, self.in_dim, self.bsize, K)
-            elif self.dataflow == 'is':
-                fwtime = CostModel.Systolic_WS(mesh, self.out_dim, self.bsize, self.in_dim, K)
-                bdtime = CostModel.Systolic_OS(mesh, self.in_dim, self.bsize, self.out_dim, K)
-                bwtime = CostModel.Systolic_IS(mesh, self.in_dim, self.out_dim, self.bsize, K)
+                fwtime = CostModel.MeshFlow_OS(mesh, self.out_dim, self.bsize, self.in_dim, K)
+                bdtime = CostModel.MeshFlow_RS(mesh, self.in_dim, self.bsize, self.out_dim, K)
+                bwtime = CostModel.MeshFlow_LS(mesh, self.out_dim, self.in_dim, self.bsize, K)
+            elif self.dataflow == 'ls':
+                fwtime = CostModel.MeshFlow_RS(mesh, self.out_dim, self.bsize, self.in_dim, K)
+                bdtime = CostModel.MeshFlow_OS(mesh, self.in_dim, self.bsize, self.out_dim, K)
+                bwtime = CostModel.MeshFlow_LS(mesh, self.in_dim, self.out_dim, self.bsize, K)
             else: #ws
-                fwtime = CostModel.Systolic_IS(mesh, self.out_dim, self.bsize, self.in_dim, K)
-                bdtime = CostModel.Systolic_WS(mesh, self.bsize, self.in_dim, self.out_dim, K)
-                bwtime = CostModel.Systolic_OS(mesh, self.out_dim, self.in_dim, self.bsize, K)
+                fwtime = CostModel.MeshFlow_LS(mesh, self.out_dim, self.bsize, self.in_dim, K)
+                bdtime = CostModel.MeshFlow_RS(mesh, self.bsize, self.in_dim, self.out_dim, K)
+                bwtime = CostModel.MeshFlow_OS(mesh, self.out_dim, self.in_dim, self.bsize, K)
         #print("fw: {}, bd: {}, bw: {}".format(fwtime, bdtime, bwtime))
         return (fwtime[0] + bdtime[0] + bwtime[0]+fwtime[1] + bdtime[1] + bwtime[1])
     
@@ -243,7 +243,7 @@ def possibleK(B,I,O,meshshape,dataflow):
     mlcm = meshshape[0]*meshshape[1] // math.gcd(meshshape[0], meshshape[1])
     if dataflow == 'os':
         kdim = I//mlcm//8
-    elif dataflow == 'is':
+    elif dataflow == 'ls':
         kdim = O//mlcm//8
     else:
         kdim = B//mlcm//8
@@ -297,9 +297,9 @@ class Autotuner:
                 if O>I and B>=I:
                     self.dataflows[lname] = 'os'
                 elif I>=O and B>=O:
-                    self.dataflows[lname] = 'is'
+                    self.dataflows[lname] = 'ls'
                 else: #weight is the biggest
-                    self.dataflows[lname] = 'ws'
+                    self.dataflows[lname] = 'rs'
         #step 2: transpositions
         for pos,lname in enumerate(self.layers):
             layer = graph.nodes[lname]
@@ -308,7 +308,7 @@ class Autotuner:
             elif layer['op_type'] == 'FeedForward':
                 input_name = layer['inputs'][0]
                 assert input_name in self.transposition
-                if self.dataflows[lname] == 'ws':
+                if self.dataflows[lname] == 'rs':
                     self.transposition[lname] = not self.transposition[input_name]
                 else:
                     self.transposition[lname] = self.transposition[input_name]
