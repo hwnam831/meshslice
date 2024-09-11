@@ -87,7 +87,7 @@ class ShardedAttention1D:
         self.seqlen = seqlen
         axis = mesh.axis_names[0]
         if sharding=='tp':
-            self.heads_per_shard = n_heads // mesh.local_devices
+            self.heads_per_shard = n_heads // len(mesh.local_devices)
             @partial(shard_map,mesh=mesh,in_specs=P(None,axis),
                     out_specs=P(None,axis))
             def _attn(Xij):
@@ -119,7 +119,6 @@ if __name__ == '__main__':
     jax.config.update('jax_platform_name', 'cpu')
     os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count=4'
     parser = argparse.ArgumentParser()
-    parser.add_argument('--ksplit', nargs=4, type=int, default=[8,8,8,8], help='Loop iteration count per FC layer')
     parser.add_argument('--batchsize', type=int, default=-1, help='Default bathsize number of chips')
     parser.add_argument('--seqlen', type=int, default=2048, help='Number of tokens per input sequence')
     parser.add_argument('--nheads', type=int, default=160, help='Number of attention head (gpt3:96, megatron:160)')
@@ -140,7 +139,7 @@ if __name__ == '__main__':
     axis_name='i'
     mesh = Mesh(jax.devices(), (axis_name,))
     devicecount = len(jax.devices())
-    benchtag = "{}{}_{}_{}_{}_{}".format(alg, 'noff_' if args.noff else '' ,NDEV, B, H, D)
+    benchtag = "{}{}_{}_{}_{}_{}".format(alg, '_noff' if args.noff else '' ,NDEV, B, H, D)
     if args.noff:
         if alg == 'tp':
             B2 = B
@@ -216,7 +215,7 @@ if __name__ == '__main__':
         forward_fn(inp_op, *weights).block_until_ready()
         jax.profiler.start_trace("/tmp/tensorboard/"+benchtag)
         with jax.profiler.TraceAnnotation("forward"):
-            forward_fn(inp_op).block_until_ready()
+            forward_fn(inp_op, *weights).block_until_ready()
         with jax.profiler.TraceAnnotation("backward"):
             backward_fn(dy)[-1].block_until_ready()
         jax.profiler.stop_trace()
@@ -249,7 +248,7 @@ if __name__ == '__main__':
         
         jax.profiler.start_trace("/tmp/tensorboard/"+benchtag)
         with jax.profiler.TraceAnnotation("forward"):
-            forward_fn(inp_op).block_until_ready()
+            forward_fn(inp_op, *weights).block_until_ready()
         with jax.profiler.TraceAnnotation("backward"):
             backward_fn(dy)[-1].block_until_ready()
         jax.profiler.stop_trace()
