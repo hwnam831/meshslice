@@ -81,25 +81,33 @@ __global__ void simple_shift(int *target, int mype, int npes) {
 
 int main(int c, char *v[]) {
     
-    size_t data_len = 32;
+    int rank, nranks;
+    size_t data_len = NELEM;
+    MPI_Comm mpi_comm;
+    nvshmemx_init_attr_t attr;
+    int mype, npes, mype_node;
     cudaStream_t stream;
 
-    nvshmem_init();
+    MPI_CHECK(MPI_Init(&c, &v));
+    MPI_CHECK(MPI_Comm_rank(MPI_COMM_WORLD, &rank));
+    MPI_CHECK(MPI_Comm_size(MPI_COMM_WORLD, &nranks));
 
-    int mype = nvshmem_my_pe();
-    int mype_node = nvshmem_team_my_pe(NVSHMEMX_TEAM_NODE);
+    mpi_comm = MPI_COMM_WORLD;
+    attr.mpi_comm = &mpi_comm;
+    nvshmemx_init_attr(NVSHMEMX_INIT_WITH_MPI_COMM, &attr);
+    mype = nvshmem_my_pe();
+    npes = nvshmem_n_pes();
+    mype_node = nvshmem_team_my_pe(NVSHMEMX_TEAM_NODE);
 
-    cudaSetDevice(mype_node);
-    cudaStreamCreate(&stream);
-
-    half *data = (half *)nvshmem_malloc(sizeof(half) * data_len);
-    half *data_h = (half *)malloc(sizeof(half) * data_len);
+    // application picks the device each PE will use
+    CUDA_CHECK(cudaSetDevice(mype_node));
+    CUDA_CHECK(cudaStreamCreate(&stream));
+    half *data = (half *)nvshmem_malloc(sizeof(half) * NELEM);
+    half *data_h = (half *)malloc(sizeof(half) * NELEM);
     uint64_t *psync = (uint64_t *)nvshmem_calloc(2, sizeof(uint64_t));
+    for (int i = 0; i < NELEM; i++) data_h[i] = (half)(mype+i);
 
-    for (size_t i = 0; i < data_len; i++) data_h[i] = (half)(mype + i);
-
-    cudaMemcpyAsync(data, data_h, sizeof(half) * data_len, cudaMemcpyHostToDevice, stream);
-
+    cudaMemcpyAsync(data, data_h, sizeof(half) * NELEM, cudaMemcpyHostToDevice, stream);
     int root = 0;
     dim3 gridDim(2), blockDim(1);
     void *args[] = {&data, &data_len, &root, &psync};
@@ -107,7 +115,8 @@ int main(int c, char *v[]) {
     nvshmemx_barrier_all_on_stream(stream);
     nvshmemx_collective_launch((const void *)ring_bcast, gridDim, blockDim, args, 0, stream);
     nvshmemx_barrier_all_on_stream(stream);
-    cudaMemcpyAsync(data_h, data, sizeof(half) * data_len, cudaMemcpyDeviceToHost, stream);
+
+    cudaMemcpyAsync(data_h, data, sizeof(half) * NELEM, cudaMemcpyDeviceToHost, stream);
 
     cudaStreamSynchronize(stream);
 
@@ -122,6 +131,7 @@ int main(int c, char *v[]) {
     free(data_h);
 
     nvshmem_finalize();
+    MPI_CHECK(MPI_Finalize());
     return 0;
 }
 

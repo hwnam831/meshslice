@@ -1,9 +1,9 @@
+#NVSHMEM_HOME	:= $(NVHPC_HOME)/Linux_x86_64/22.11/comm_libs/nvshmem
 NVCC          	:= nvcc
 GENCODE_FLAGS	:= -gencode arch=compute_80,code=sm_80
-NVCC_FLAGS 		:= -ccbin=mpic++ -dc -Xcompiler -fopenmp -lineinfo -DUSE_NVTX -lnvToolsExt $(GENCODE_FLAGS) -std=c++14
-
+NVCC_FLAGS 		:= -ccbin=mpic++ -dc -Xcompiler -fopenmp -lineinfo -DUSE_NVTX -lnvToolsExt $(GENCODE_FLAGS) -std=c++14 -I$(NVSHMEM_HOME)/include
 NVCC_LDFLAGS 	:= -ccbin=mpic++ -lcuda -lcudart -lnvToolsExt -lnvidia-ml -lcublas
-NVCC_LDFLAGS 	+= -lnvshmem
+NVCC_LDFLAGS 	+= -L$(NVSHMEM_HOME)/lib -lnvshmem
 
 all: build
 
