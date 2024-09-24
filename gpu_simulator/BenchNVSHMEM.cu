@@ -29,16 +29,18 @@
 __global__ void ring_bcast(half *data, size_t nelem, size_t pkt_size, int root, uint64_t *psync) {
     //Bidirectional algorithm. First CTA sends rightwards and second CTA sends in opposite direction. 
     int direction = blockIdx.x % 2;
-    size_t offset = direction * (nelem/2);
+    int yidx = blockIdx.y;
+    int g_y = gridDim.y;
+    size_t offset = direction * (nelem/2/g_y) + yidx * (nelem/g_y);
 
     int mype = nvshmem_my_pe();
     int npes = nvshmem_n_pes();
     int peer = direction == 0 ?
                (mype + 1) % npes : (mype + npes - 1) % npes;
 
-    size_t npackets = (nelem/2 + pkt_size-1) / pkt_size;
+    size_t npackets = (nelem/2/g_y + pkt_size-1) / pkt_size;
 
-    uint64_t *mysync = &psync[direction];
+    uint64_t *mysync = &psync[direction + 2*yidx];
     *mysync = 0;
     
     if (direction == 0 && mype == (root + npes - 1) % npes) return;
@@ -47,11 +49,11 @@ __global__ void ring_bcast(half *data, size_t nelem, size_t pkt_size, int root, 
 
     for (int idx=0; idx < npackets; idx++){
         half* pos = data + offset + idx*pkt_size;
-        int elemcount = idx == npackets-1 ? (nelem/2) - idx*pkt_size : pkt_size;
+        int elemcount = (idx+1)*pkt_size > nelem/2/g_y? (nelem/2/g_y) - idx*pkt_size : pkt_size;
         if (mype != root)
             nvshmem_signal_wait_until(mysync, NVSHMEM_CMP_GT, idx);
         nvshmemx_put16_block((void*)pos, (void*)pos, elemcount, peer);
-        nvshmem_fence();
+        nvshmem_quiet();
         nvshmemx_signal_op(mysync, idx+1, NVSHMEM_SIGNAL_SET, peer);
     }
     
@@ -88,7 +90,7 @@ __global__ void ring_reduce(half *data, half* tmp, size_t nelem, size_t pkt_size
         if(mysrc != source)
             nvshmem_signal_wait_until(mysync, NVSHMEM_CMP_GT, idx);
         nvshmemx_get16_block((void*)mytmp, (void*)pos, elemcount, mysrc);
-        nvshmem_fence();
+        nvshmem_quiet();
         for (int mypos = threadIdx.x; mypos < elemcount; mypos += blockDim.x){
             pos[mypos] = pos[mypos] + mytmp[mypos];
         }
@@ -141,27 +143,27 @@ int main(int c, char *v[]) {
     mype = nvshmem_my_pe();
     npes = nvshmem_n_pes();
     mype_node = nvshmem_team_my_pe(NVSHMEMX_TEAM_NODE);
-    printf("Running benchmark for datalen %d and pktsize %d:\n",data_len, pkt_size);
+    
     // application picks the device each PE will use
     CUDA_CHECK(cudaSetDevice(mype_node));
     CUDA_CHECK(cudaStreamCreate(&stream));
     half *data = (half *)nvshmem_malloc(sizeof(half) * data_len);
     half *data_h = (half *)malloc(sizeof(half) * data_len);
-    uint64_t *psync = (uint64_t *)nvshmem_calloc(2, sizeof(uint64_t));
+    int g_y = 4;
+    if (c > 3) g_y = std::stoi(v[3]);
+    
+    uint64_t *psync = (uint64_t *)nvshmem_calloc(2*g_y, sizeof(uint64_t));
     for (int i = 0; i < data_len; i++) data_h[i] = (half)(mype+1);
 
     cudaMemcpyAsync(data, data_h, sizeof(half) * data_len, cudaMemcpyHostToDevice, stream);
     int root = 0;
-    dim3 gridDim(2), blockDim(THREADS_PER_BLOCK);
+    dim3 gridDim(2,g_y), blockDim(THREADS_PER_BLOCK);
     void *args[] = {&data, &data_len, &pkt_size, &root, &psync};
 
     nvshmemx_barrier_all_on_stream(stream);
     nvshmemx_collective_launch((const void *)ring_bcast, gridDim, blockDim, args, 0, stream);
     nvshmemx_barrier_all_on_stream(stream);
-
-    cudaMemcpyAsync(data_h, data, sizeof(half) * data_len, cudaMemcpyDeviceToHost, stream);
-
-    cudaStreamSynchronize(stream);
+    printf("\nRunning benchmark for datalen %d, pktsize %d, numCTA %d:\n",data_len, pkt_size, g_y*2);
     /*
     for (size_t i = 0; i < data_len; i++) {
         if ((int)data_h[i] != 1)
@@ -178,10 +180,9 @@ int main(int c, char *v[]) {
     for (int j = 0; j < npes*REPEAT; j++) {
         root = j%npes;
         nvshmemx_collective_launch((const void *)ring_bcast, gridDim, blockDim, args, 0, stream);
+        nvshmemx_barrier_all_on_stream(stream);
     }
-
     
-    nvshmemx_barrier_all_on_stream(stream);
     // Record the stop event
     CUDA_CHECK(cudaEventRecord(stop, NULL));
 
@@ -199,27 +200,23 @@ int main(int c, char *v[]) {
     printf("Broadcast performance= %.2f GB/s, Time= %.3f msec, Size= %.0f KB\n",
         gigaBytePerSec, msecPerMatrixMul, dataSize*1e-3);
 
-
-    printf("Running reduce test.\n");
     for (int i = 0; i < data_len; i++) data_h[i] = (half)(mype+1);
     cudaMemcpyAsync(data, data_h, sizeof(half) * data_len, cudaMemcpyHostToDevice, stream);
-    const int g_y = 4;
-    dim3 gridDim2(2,g_y);
     half *tmp_data = (half *)nvshmem_malloc(sizeof(half) * g_y * 2*pkt_size);
-    uint64_t *psync2 = (uint64_t *)nvshmem_calloc(2*g_y, sizeof(uint64_t));
-    void *args2[] = {&data, &tmp_data, &data_len, &pkt_size, &root, &psync2};
-    
 
+    void *args2[] = {&data, &tmp_data, &data_len, &pkt_size, &root, &psync};
+    
+    nvshmemx_collective_launch((const void *)ring_reduce, gridDim, blockDim, args2, 0, stream);
+    nvshmemx_barrier_all_on_stream(stream);
     // Record the start event
     CUDA_CHECK(cudaEventRecord(start, NULL));
     
     for (int j = 0; j < npes*REPEAT; j++) {
         root = j%npes;
-        nvshmemx_collective_launch((const void *)ring_reduce, gridDim2, blockDim, args2, 0, stream);
+        nvshmemx_collective_launch((const void *)ring_reduce, gridDim, blockDim, args2, 0, stream);
+        nvshmemx_barrier_all_on_stream(stream);
     }
 
-    
-    nvshmemx_barrier_all_on_stream(stream);
     // Record the stop event
     CUDA_CHECK(cudaEventRecord(stop, NULL));
 
@@ -239,7 +236,7 @@ int main(int c, char *v[]) {
     nvshmem_free(tmp_data);
     nvshmem_free(data);
     nvshmem_free(psync);
-    nvshmem_free(psync2);
+
     free(data_h);
 
     nvshmem_finalize();
