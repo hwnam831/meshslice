@@ -21,8 +21,8 @@
 #include <nvshmem.h>
 #include <nvshmemx.h>
 
-#define PKTSIZE 1024
-#define NELEM 4096
+#define PKTSIZE 512
+#define NELEM 8192
 #define REPEAT 10
 #define THREADS_PER_BLOCK 512
 
@@ -61,8 +61,9 @@ __global__ void ring_bcast(half *data, size_t nelem, size_t pkt_size, int root, 
 __global__ void ring_reduce(half *data, half* tmp, size_t nelem, size_t pkt_size, int root, uint64_t *psync) {
     //Bidirectional algorithm. First CTA sends rightwards and second CTA sends in opposite direction. 
     int direction = blockIdx.x % 2;
-    size_t offset = direction * (nelem/2);
-
+    int yidx = blockIdx.y;
+    int g_y = gridDim.y;
+    size_t offset = direction * (nelem/2/g_y) + yidx * (nelem/g_y);
     int mype = nvshmem_my_pe();
     int npes = nvshmem_n_pes();
     int mynext = direction == 0 ?
@@ -70,9 +71,9 @@ __global__ void ring_reduce(half *data, half* tmp, size_t nelem, size_t pkt_size
     int mysrc = direction == 0 ?
                 (mype + npes - 1) % npes : (mype + 1) % npes;
 
-    size_t npackets = (nelem/2 + pkt_size-1) / pkt_size;
+    size_t npackets = (nelem/2/g_y + pkt_size-1) / pkt_size;
 
-    uint64_t *mysync = &psync[direction];
+    uint64_t *mysync = &psync[direction + 2*yidx];
 
     int source = direction == 0 ?
                 (root + 1) % npes : (root + npes - 1) % npes;
@@ -80,11 +81,12 @@ __global__ void ring_reduce(half *data, half* tmp, size_t nelem, size_t pkt_size
 
     if (mype == source) return;
 
-    half* mytmp = tmp + direction*pkt_size;
+    half* mytmp = tmp + direction*pkt_size + yidx*2*pkt_size;
     for (int idx=0; idx < npackets; idx++){
         half* pos = data + offset + idx*pkt_size;
-        int elemcount = (idx+1)*pkt_size > nelem/2? (nelem/2) - idx*pkt_size : pkt_size;
-        nvshmem_signal_wait_until(mysync, NVSHMEM_CMP_GT, idx);
+        int elemcount = (idx+1)*pkt_size > nelem/2/g_y? (nelem/2/g_y) - idx*pkt_size : pkt_size;
+        if(mysrc != source)
+            nvshmem_signal_wait_until(mysync, NVSHMEM_CMP_GT, idx);
         nvshmemx_get16_block((void*)mytmp, (void*)pos, elemcount, mysrc);
         nvshmem_fence();
         for (int mypos = threadIdx.x; mypos < elemcount; mypos += blockDim.x){
@@ -189,12 +191,15 @@ int main(int c, char *v[]) {
     CUDA_CHECK(cudaStreamCreate(&stream2));
     for (int i = 0; i < NELEM; i++) data_h[i] = (half)(mype+1);
     cudaMemcpyAsync(data, data_h, sizeof(half) * NELEM, cudaMemcpyHostToDevice, stream2);
-    half *tmp_data = (half *)nvshmem_malloc(sizeof(half) * 2*pkt_size);
-
-    void *args2[] = {&data, &tmp_data, &data_len, &pkt_size, &root, &psync};
+    
+    const int g_y = 4;
+    dim3 gridDim2(2,g_y);
+    half *tmp_data = (half *)nvshmem_malloc(sizeof(half) * g_y * 2*pkt_size);
+    uint64_t *psync2 = (uint64_t *)nvshmem_calloc(2*g_y, sizeof(uint64_t));
+    void *args2[] = {&data, &tmp_data, &data_len, &pkt_size, &root, &psync2};
 
     nvshmemx_barrier_all_on_stream(stream2);
-    NVSHMEM_CHECK(nvshmemx_collective_launch((const void *)ring_reduce, gridDim, blockDim, args2, 0, stream2));
+    NVSHMEM_CHECK(nvshmemx_collective_launch((const void *)ring_reduce, gridDim2, blockDim, args2, 0, stream2));
     //checkKernelErrors((ring_reduce<<<2,THREADS_PER_BLOCK>>>(data,tmp_data,data_len,pkt_size,root,psync)));
     nvshmemx_barrier_all_on_stream(stream2);
 
@@ -215,6 +220,7 @@ int main(int c, char *v[]) {
     nvshmem_free(tmp_data);
     nvshmem_free(data);
     nvshmem_free(psync);
+    nvshmem_free(psync2);
     free(data_h);
 
     nvshmem_finalize();
