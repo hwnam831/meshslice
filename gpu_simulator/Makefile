@@ -7,12 +7,18 @@ NVCC_LDFLAGS 	+= -L$(NVSHMEM_HOME)/lib -lnvshmem
 
 all: build
 
-build: TestCUBLAS TestNVSHMEM
+build: TestCUBLAS BenchNVSHMEM TestNVSHMEM
 
 TestCUBLAS.o:TestCUBLAS.cu cuda_helper.h
 	$(NVCC) $(NVCC_FLAGS) -o $@ -c $<
 
 TestCUBLAS: TestCUBLAS.o
+	$(NVCC) $(GENCODE_FLAGS) -o $@ $+ $(NVCC_LDFLAGS)
+
+BenchNVSHMEM.o:BenchNVSHMEM.cu cuda_helper.h
+	$(NVCC) $(NVCC_FLAGS) -o $@ -c $<
+
+BenchNVSHMEM: BenchNVSHMEM.o
 	$(NVCC) $(GENCODE_FLAGS) -o $@ $+ $(NVCC_LDFLAGS)
 
 TestNVSHMEM.o:TestNVSHMEM.cu cuda_helper.h
@@ -21,9 +27,7 @@ TestNVSHMEM.o:TestNVSHMEM.cu cuda_helper.h
 TestNVSHMEM: TestNVSHMEM.o
 	$(NVCC) $(GENCODE_FLAGS) -o $@ $+ $(NVCC_LDFLAGS)
 
-run: build
-	mpirun --allow-run-as-root -n 2 TestNVSHMEM
 
 clean:
-	rm TestCUBLAS TestNVSHMEM *.o
+	rm TestCUBLAS BenchNVSHMEM TestNVSHMEM *.o
 

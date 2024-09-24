@@ -57,54 +57,6 @@ __global__ void ring_bcast(half *data, size_t nelem, size_t pkt_size, int root, 
     
 }
 
-//In-place reduce algorithm
-__global__ void ring_reduce(half *data, half* tmp, size_t nelem, size_t pkt_size, int root, uint64_t *psync) {
-    //Bidirectional algorithm. First CTA sends rightwards and second CTA sends in opposite direction. 
-    int direction = blockIdx.x % 2;
-    size_t offset = direction * (nelem/2);
-
-    int mype = nvshmem_my_pe();
-    int npes = nvshmem_n_pes();
-    int mynext = direction == 0 ?
-               (mype + 1) % npes : (mype + npes - 1) % npes;
-    int mysrc = direction == 0 ?
-                (mype + npes - 1) % npes : (mype + 1) % npes;
-
-    size_t npackets = (nelem/2 + pkt_size-1) / pkt_size;
-
-    uint64_t *mysync = &psync[direction];
-
-    int source = direction == 0 ?
-                (root + 1) % npes : (root + npes - 1) % npes;
-    *mysync = (mysrc == source) ? npackets+1 : 0;
-
-    if (mype == source) return;
-
-    half* mytmp = tmp + direction*pkt_size;
-    for (int idx=0; idx < npackets; idx++){
-        half* pos = data + offset + idx*pkt_size;
-        int elemcount = (idx+1)*pkt_size > nelem/2? (nelem/2) - idx*pkt_size : pkt_size;
-        nvshmem_signal_wait_until(mysync, NVSHMEM_CMP_GT, idx);
-        nvshmemx_get16_block((void*)mytmp, (void*)pos, elemcount, mysrc);
-        nvshmem_fence();
-        for (int mypos = threadIdx.x; mypos < elemcount; mypos += blockDim.x){
-            pos[mypos] = pos[mypos] + mytmp[mypos];
-        }
-        nvshmemx_signal_op(mysync, idx+1, NVSHMEM_SIGNAL_SET, mynext);
-    }
-    
-}
-
-#define checkKernelErrors(expr) do {                                                        \
-    expr;                                                                                   \
-                                                                                            \
-    cudaError_t __err = cudaGetLastError();                                                 \
-    if (__err != cudaSuccess) {                                                             \
-        printf("Line %d: '%s' failed: %s\n", __LINE__, # expr, cudaGetErrorString(__err));  \
-        abort();                                                                            \
-    }                                                                                       \
-} while(0)
-
 #undef CUDA_CHECK
 #define CUDA_CHECK(stmt)                                                          \
     do {                                                                          \
@@ -125,15 +77,10 @@ __global__ void ring_reduce(half *data, half* tmp, size_t nelem, size_t pkt_size
         }                                                                                       \
     } while (0)
 
-#define NVSHMEM_CHECK(stmt)                                                                \
-    do {                                                                                   \
-        int result = (stmt);                                                               \
-        if (NVSHMEMX_SUCCESS != result) {                                                  \
-            fprintf(stderr, "[%s:%d] nvshmem failed with error %d \n", __FILE__, __LINE__, \
-                    result);                                                               \
-            exit(-1);                                                                      \
-        }                                                                                  \
-    } while (0)
+__global__ void simple_shift(int *target, int mype, int npes) {
+    int peer = (mype + 1) % npes;
+    nvshmem_int_p(target, mype, peer);
+}
 
 int main(int c, char *v[]) {
     
@@ -148,6 +95,10 @@ int main(int c, char *v[]) {
     MPI_CHECK(MPI_Init(&c, &v));
     MPI_CHECK(MPI_Comm_rank(MPI_COMM_WORLD, &rank));
     MPI_CHECK(MPI_Comm_size(MPI_COMM_WORLD, &nranks));
+
+    if (c > 1) data_len = std::stoi(v[1]);//printf("v[1] is %d\t", std::stoi(v[1]));
+
+    if (c > 2) pkt_size = std::stoi(v[2]);//printf("v[2] is %d\n", std::stoi(v[2]));
 
     mpi_comm = MPI_COMM_WORLD;
     attr.mpi_comm = &mpi_comm;
@@ -168,7 +119,7 @@ int main(int c, char *v[]) {
     int root = 0;
     dim3 gridDim(2), blockDim(THREADS_PER_BLOCK);
     void *args[] = {&data, &data_len, &pkt_size, &root, &psync};
-    /*
+
     nvshmemx_barrier_all_on_stream(stream);
     nvshmemx_collective_launch((const void *)ring_bcast, gridDim, blockDim, args, 0, stream);
     nvshmemx_barrier_all_on_stream(stream);
@@ -176,43 +127,43 @@ int main(int c, char *v[]) {
     cudaMemcpyAsync(data_h, data, sizeof(half) * NELEM, cudaMemcpyDeviceToHost, stream);
 
     cudaStreamSynchronize(stream);
-    
+    /*
     for (size_t i = 0; i < data_len; i++) {
         if ((int)data_h[i] != 1)
-            printf("Broadcast PE %d error, data[%zu] = %d expected data[%zu] = %d\n", mype, i, (int)data_h[i], i,
+            printf("PE %d error, data[%zu] = %d expected data[%zu] = %d\n", mype, i, (int)data_h[i], i,
                    1);
-    }
-    printf("Broadcast test done.\n");
-    */
-    printf("Running reduce test.\n");
-    cudaStream_t stream2;
-    CUDA_CHECK(cudaStreamCreate(&stream2));
-    for (int i = 0; i < NELEM; i++) data_h[i] = (half)(mype+1);
-    cudaMemcpyAsync(data, data_h, sizeof(half) * NELEM, cudaMemcpyHostToDevice, stream2);
-    half *tmp_data = (half *)nvshmem_malloc(sizeof(half) * 2*pkt_size);
-
-    void *args2[] = {&data, &tmp_data, &data_len, &pkt_size, &root, &psync};
-
-    nvshmemx_barrier_all_on_stream(stream2);
-    NVSHMEM_CHECK(nvshmemx_collective_launch((const void *)ring_reduce, gridDim, blockDim, args2, 0, stream2));
-    //checkKernelErrors((ring_reduce<<<2,THREADS_PER_BLOCK>>>(data,tmp_data,data_len,pkt_size,root,psync)));
-    nvshmemx_barrier_all_on_stream(stream2);
-
-    cudaMemcpyAsync(data_h, data, sizeof(half) * NELEM, cudaMemcpyDeviceToHost, stream2);
-
-    cudaStreamSynchronize(stream2);
+    }*/
+    //printf("Warmup done.\n");
+    cudaEvent_t start, stop;
+    CUDA_CHECK(cudaEventCreate(&start));
+    CUDA_CHECK(cudaEventCreate(&stop));
+    // Record the start event
+    CUDA_CHECK(cudaEventRecord(start, NULL));
     
-    if (mype == root){
-        for (size_t i = 0; i < data_len; i++) {
-            int sum = (npes+1)*npes/2;
-            if ((int)data_h[i] != sum)
-                printf("Reduce PE %d error, data[%zu] = %d expected data[%zu] = %d\n", mype, i, (int)data_h[i], i,
-                    sum);
-        }
+    for (int j = 0; j < npes*REPEAT; j++) {
+        root = j%npes;
+        nvshmemx_collective_launch((const void *)ring_bcast, gridDim, blockDim, args, 0, stream);
     }
-    printf("Reduce test done.\n");
 
-    nvshmem_free(tmp_data);
+    
+    nvshmemx_barrier_all_on_stream(stream);
+    // Record the stop event
+    CUDA_CHECK(cudaEventRecord(stop, NULL));
+
+    // Wait for the stop event to complete
+    CUDA_CHECK(cudaEventSynchronize(stop));
+
+    float msecTotal = 0.0f;
+    CUDA_CHECK(cudaEventElapsedTime(&msecTotal, start, stop));
+
+    // Compute and print the performance
+    float msecPerMatrixMul = msecTotal / REPEAT / npes;
+    double dataSize = 2.0 * data_len;
+    double gigaBytePerSec =
+        (dataSize * 1.0e-9f) / (msecPerMatrixMul / 1000.0f);
+    printf("Performance= %.2f GB/s, Time= %.3f msec, Size= %.0f KB\n",
+        gigaBytePerSec, msecPerMatrixMul, dataSize*1e-3);
+
     nvshmem_free(data);
     nvshmem_free(psync);
     free(data_h);
