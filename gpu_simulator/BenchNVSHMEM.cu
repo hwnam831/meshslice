@@ -91,8 +91,11 @@ __global__ void ring_reduce(half *data, half* tmp, size_t nelem, size_t pkt_size
             nvshmem_signal_wait_until(mysync, NVSHMEM_CMP_GT, idx);
         nvshmemx_get16_block((void*)mytmp, (void*)pos, elemcount, mysrc);
         nvshmem_quiet();
-        for (int mypos = threadIdx.x; mypos < elemcount; mypos += blockDim.x){
-            pos[mypos] = pos[mypos] + mytmp[mypos];
+        half2* pos2 = (half2*)pos;
+        half2* mytmp2 = (half2*) mytmp;
+#pragma unroll
+        for (int mypos = threadIdx.x; mypos < elemcount/2; mypos += blockDim.x){
+            pos2[mypos] += mytmp2[mypos];
         }
         nvshmemx_signal_op(mysync, idx+1, NVSHMEM_SIGNAL_SET, mynext);
     }
