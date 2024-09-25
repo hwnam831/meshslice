@@ -52,7 +52,7 @@ __global__ void ring_bcast(half *data, size_t nelem, size_t pkt_size, int root, 
         int elemcount = (idx+1)*pkt_size > nelem/2/g_y? (nelem/2/g_y) - idx*pkt_size : pkt_size;
         if (mype != root)
             nvshmem_signal_wait_until(mysync, NVSHMEM_CMP_GT, idx);
-        nvshmemx_put16_block((void*)pos, (void*)pos, elemcount, peer);
+        nvshmemx_put32_block((void*)pos, (void*)pos, elemcount/2, peer);
         nvshmem_quiet();
         nvshmemx_signal_op(mysync, idx+1, NVSHMEM_SIGNAL_SET, peer);
     }
@@ -102,6 +102,89 @@ __global__ void ring_reduce(half *data, half* tmp, size_t nelem, size_t pkt_size
     
 }
 
+__global__ void ring_allgather(half *shard, half *buf, size_t nelem, uint64_t *psync) {
+    //Bidirectional algorithm. First CTA sends rightwards and second CTA sends in opposite direction. 
+    int direction = blockIdx.x % 2;
+    int yidx = blockIdx.y;
+    int g_y = gridDim.y;
+    size_t elemcount = nelem/2/g_y;
+    size_t offset = (direction + 2*yidx) * elemcount;
+    
+    int mype = nvshmem_my_pe();
+    int npes = nvshmem_n_pes();
+    int peer = direction == 0 ?
+               (mype + 1) % npes : (mype + npes - 1) % npes;
+
+    uint64_t *mysync = &psync[direction + 2*yidx];
+    *mysync = 1;
+    //First, my shard is written to the buffer
+    half2* mypos = (half2*)&buf[nelem*mype + offset];
+    half2* shard2 = (half2*)&shard[offset];
+    for (int idx = threadIdx.x; idx < elemcount/2; idx += blockDim.x){
+        mypos[idx] = shard2[idx];
+    }
+    __syncthreads();
+    for (size_t iter=0; iter < npes-1; iter++){
+        mypos = (half2*)&buf[nelem*mype + offset];
+        nvshmem_signal_wait_until(mysync, NVSHMEM_CMP_GT, iter);
+        nvshmemx_put32_block((void*)mypos, (void*)mypos, elemcount/2, peer);
+        nvshmem_quiet();
+        nvshmemx_signal_op(mysync, iter+2, NVSHMEM_SIGNAL_SET, peer);
+        mype = direction == 0 ?
+            (mype + npes - 1) % npes : (mype + 1) % npes;
+    }
+    
+}
+
+__global__ void ring_reducescatter(half *shard, half *buf, size_t nelem, uint64_t *psync) {
+    //Bidirectional algorithm. First CTA sends rightwards and second CTA sends in opposite direction. 
+    int direction = blockIdx.x % 2;
+    int yidx = blockIdx.y;
+    int g_y = gridDim.y;
+    size_t elemcount = nelem/2/g_y;
+    size_t offset = (direction + 2*yidx) * elemcount;
+    
+    int mype = nvshmem_my_pe();
+    int npes = nvshmem_n_pes();
+    int peer = direction == 0 ?
+               (mype + 1) % npes : (mype + npes - 1) % npes;
+    int mynext = direction == 1 ?
+               (mype + 1) % npes : (mype + npes - 1) % npes;
+
+    uint64_t *mysync = &psync[direction + 2*yidx];
+    *mysync = 0;
+    //First, my shard is written to the buffer
+    half* mypos = &buf[nelem*mype + offset];
+    half* myshard = &shard[offset];
+    half2* myshard2 = (half2*)myshard;
+    half2* mypos2 = (half2*)mypos;
+    __syncthreads();
+    int curpe = peer;
+    for (int iter=0; iter < npes-1; iter++){
+        curpe = direction == 0 ?
+            (curpe + 1) % npes : (curpe + npes - 1) % npes;
+        mypos = &buf[nelem*curpe + offset];
+        nvshmem_signal_wait_until(mysync, NVSHMEM_CMP_EQ, iter);
+        nvshmemx_get32_block((void*)myshard, (void*)mypos, elemcount/2, peer);
+        nvshmem_quiet();
+        mypos2 = (half2*)mypos;
+        for (int idx = threadIdx.x; idx < elemcount/2; idx += blockDim.x){
+            mypos2[idx] = mypos2[idx] + myshard2[idx];
+        }
+        __syncthreads();
+        nvshmemx_signal_op(mysync, iter+1, NVSHMEM_SIGNAL_SET, mynext);
+        
+    }
+    
+    mypos = &buf[nelem*mype + offset];
+    mypos2 = (half2*)mypos;
+    for (int idx = threadIdx.x; idx < elemcount/2; idx += blockDim.x){
+        myshard2[idx] = mypos2[idx];
+    }
+    __syncthreads();
+    
+}
+
 #undef CUDA_CHECK
 #define CUDA_CHECK(stmt)                                                          \
     do {                                                                          \
@@ -120,6 +203,16 @@ __global__ void ring_reduce(half *data, half* tmp, size_t nelem, size_t pkt_size
             fprintf(stderr, "[%s:%d] MPI failed with error %d \n", __FILE__, __LINE__, result); \
             exit(-1);                                                                           \
         }                                                                                       \
+    } while (0)
+
+#define NVSHMEM_CHECK(stmt)                                                                \
+    do {                                                                                   \
+        int result = (stmt);                                                               \
+        if (NVSHMEMX_SUCCESS != result) {                                                  \
+            fprintf(stderr, "[%s:%d] nvshmem failed with error %d \n", __FILE__, __LINE__, \
+                    result);                                                               \
+            exit(-1);                                                                      \
+        }                                                                                  \
     } while (0)
 
 int main(int c, char *v[]) {
@@ -236,11 +329,65 @@ int main(int c, char *v[]) {
         gigaBytePerSec, msecPerMatrixMul, dataSize*1e-3);
 
     
+    half *buf = (half *)nvshmem_malloc(sizeof(half) * data_len*npes);
+    half *buf_h = (half *)malloc(sizeof(half) * data_len*npes);
+    void *args3[] = {&data, &buf, &data_len, &psync};
+
+    NVSHMEM_CHECK(nvshmemx_collective_launch((const void *)ring_reducescatter, gridDim, blockDim, args3, 0, stream));
+    nvshmemx_barrier_all_on_stream(stream);
+    CUDA_CHECK(cudaEventRecord(start, NULL));
+    
+    for (int j = 0; j < REPEAT; j++) {
+        nvshmemx_collective_launch((const void *)ring_reducescatter, gridDim, blockDim, args3, 0, stream);
+        //nvshmemx_barrier_all_on_stream(stream);
+    }
+
+    // Record the stop event
+    CUDA_CHECK(cudaEventRecord(stop, NULL));
+
+    // Wait for the stop event to complete
+    CUDA_CHECK(cudaEventSynchronize(stop));
+
+    msecTotal = 0.0f;
+    CUDA_CHECK(cudaEventElapsedTime(&msecTotal, start, stop));
+    
+    msecPerMatrixMul = msecTotal / REPEAT;
+    gigaBytePerSec =
+        (dataSize * 1.0e-9f)*(npes-1) / (msecPerMatrixMul / 1000.0f);
+    printf("Reducescatter performance= %.2f GB/s, Time= %.3f msec, Size= %.0f KB\n",
+        gigaBytePerSec, msecPerMatrixMul, dataSize*1e-3);
+
+
+    NVSHMEM_CHECK(nvshmemx_collective_launch((const void *)ring_allgather, gridDim, blockDim, args3, 0, stream));
+    nvshmemx_barrier_all_on_stream(stream);
+    CUDA_CHECK(cudaEventRecord(start, NULL));
+    
+    for (int j = 0; j < REPEAT; j++) {
+        nvshmemx_collective_launch((const void *)ring_allgather, gridDim, blockDim, args3, 0, stream);
+        nvshmemx_barrier_all_on_stream(stream);
+    }
+
+    // Record the stop event
+    CUDA_CHECK(cudaEventRecord(stop, NULL));
+
+    // Wait for the stop event to complete
+    CUDA_CHECK(cudaEventSynchronize(stop));
+
+    msecTotal = 0.0f;
+    CUDA_CHECK(cudaEventElapsedTime(&msecTotal, start, stop));
+    
+    msecPerMatrixMul = msecTotal / REPEAT;
+    gigaBytePerSec =
+        (dataSize * 1.0e-9f)*(npes-1) / (msecPerMatrixMul / 1000.0f);
+    printf("Allgather performance= %.2f GB/s, Time= %.3f msec, Size= %.0f KB\n",
+        gigaBytePerSec, msecPerMatrixMul, dataSize*1e-3);
     nvshmem_free(tmp_data);
     nvshmem_free(data);
     nvshmem_free(psync);
+    nvshmem_free(buf);
 
     free(data_h);
+    free(buf_h);
 
     nvshmem_finalize();
     MPI_CHECK(MPI_Finalize());

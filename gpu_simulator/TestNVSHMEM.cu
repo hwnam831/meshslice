@@ -52,7 +52,7 @@ __global__ void ring_bcast(half *data, size_t nelem, size_t pkt_size, int root, 
         int elemcount = (idx+1)*pkt_size > nelem/2/g_y? (nelem/2/g_y) - idx*pkt_size : pkt_size;
         if (mype != root)
             nvshmem_signal_wait_until(mysync, NVSHMEM_CMP_GT, idx);
-        nvshmemx_put16_block((void*)pos, (void*)pos, elemcount, peer);
+        nvshmemx_put32_block((void*)pos, (void*)pos, elemcount/2, peer);
         nvshmem_quiet();
         nvshmemx_signal_op(mysync, idx+1, NVSHMEM_SIGNAL_SET, peer);
     }
@@ -93,10 +93,10 @@ __global__ void ring_reduce(half *data, half* tmp, size_t nelem, size_t pkt_size
         nvshmem_quiet();
         half2* pos2 = (half2*)pos;
         half2* mytmp2 = (half2*) mytmp;
+#pragma unroll
         for (int mypos = threadIdx.x; mypos < elemcount/2; mypos += blockDim.x){
-            pos2[mypos] = pos2[mypos] + mytmp2[mypos];
+            pos2[mypos] += mytmp2[mypos];
         }
-        __syncthreads();
         nvshmemx_signal_op(mysync, idx+1, NVSHMEM_SIGNAL_SET, mynext);
     }
     
@@ -116,7 +116,7 @@ __global__ void ring_allgather(half *shard, half *buf, size_t nelem, uint64_t *p
                (mype + 1) % npes : (mype + npes - 1) % npes;
 
     uint64_t *mysync = &psync[direction + 2*yidx];
-    *mysync = 0;
+    *mysync = 1;
     //First, my shard is written to the buffer
     half2* mypos = (half2*)&buf[nelem*mype + offset];
     half2* shard2 = (half2*)&shard[offset];
@@ -124,12 +124,12 @@ __global__ void ring_allgather(half *shard, half *buf, size_t nelem, uint64_t *p
         mypos[idx] = shard2[idx];
     }
     __syncthreads();
-    for (int iter=0; iter < npes-1; iter++){
+    for (size_t iter=0; iter < npes-1; iter++){
         mypos = (half2*)&buf[nelem*mype + offset];
-        nvshmem_signal_wait_until(mysync, NVSHMEM_CMP_EQ, iter);
+        nvshmem_signal_wait_until(mysync, NVSHMEM_CMP_GT, iter);
         nvshmemx_put32_block((void*)mypos, (void*)mypos, elemcount/2, peer);
         nvshmem_quiet();
-        nvshmemx_signal_op(mysync, iter+1, NVSHMEM_SIGNAL_SET, peer);
+        nvshmemx_signal_op(mysync, iter+2, NVSHMEM_SIGNAL_SET, peer);
         mype = direction == 0 ?
             (mype + npes - 1) % npes : (mype + 1) % npes;
     }
@@ -165,7 +165,7 @@ __global__ void ring_reducescatter(half *shard, half *buf, size_t nelem, uint64_
             (curpe + 1) % npes : (curpe + npes - 1) % npes;
         mypos = &buf[nelem*curpe + offset];
         nvshmem_signal_wait_until(mysync, NVSHMEM_CMP_EQ, iter);
-        nvshmemx_get16_block((void*)myshard, (void*)mypos, elemcount, peer);
+        nvshmemx_get32_block((void*)myshard, (void*)mypos, elemcount/2, peer);
         nvshmem_quiet();
         mypos2 = (half2*)mypos;
         for (int idx = threadIdx.x; idx < elemcount/2; idx += blockDim.x){
