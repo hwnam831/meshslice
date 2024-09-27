@@ -15,13 +15,13 @@ TestCUBLAS.o:TestCUBLAS.cu cuda_helper.h
 TestCUBLAS: TestCUBLAS.o
 	$(NVCC) $(GENCODE_FLAGS) -o $@ $+ $(NVCC_LDFLAGS)
 
-BenchNVSHMEM.o:BenchNVSHMEM.cu cuda_helper.h
+BenchNVSHMEM.o:BenchNVSHMEM.cu RingCollectives.cuh
 	$(NVCC) $(NVCC_FLAGS) -o $@ -c $<
 
 BenchNVSHMEM: BenchNVSHMEM.o
 	$(NVCC) $(GENCODE_FLAGS) -o $@ $+ $(NVCC_LDFLAGS)
 
-TestNVSHMEM.o:TestNVSHMEM.cu cuda_helper.h
+TestNVSHMEM.o:TestNVSHMEM.cu RingCollectives.cuh
 	$(NVCC) $(NVCC_FLAGS) -o $@ -c $<
 
 TestNVSHMEM: TestNVSHMEM.o
