@@ -48,8 +48,8 @@ int main(int c, char *v[]) {
     half *data0 = (half *)nvshmem_malloc(sizeof(half) * data_len);
     half *data1 = (half *)nvshmem_malloc(sizeof(half) * data_len);
 
-    //half *buf0 = (half *)nvshmem_malloc(sizeof(half) * data_len * ndev);
-    //half *buf1 = (half *)nvshmem_malloc(sizeof(half) * data_len * ndev);
+    half *buf0 = (half *)nvshmem_malloc(sizeof(half) * data_len * ndev);
+
     half *data_h = (half *)malloc(sizeof(half) * data_len);
     int g_y = NBLOCKS;
     if (c > 4) g_y = std::stoi(v[4]);
@@ -109,6 +109,7 @@ int main(int c, char *v[]) {
     nvshmemx_barrier_all_on_stream(stream1);
     nvshmemx_collective_launch((const void *)mesh_reduce, gridDim, blockDim, args_reduce1, 0, stream1);
     nvshmemx_barrier_all_on_stream(stream1);
+    
     printf("Benchmarking Reduce at dim=1, \n");
     // Record the start event
     CUDA_CHECK(cudaEventRecord(start, NULL));
@@ -137,15 +138,145 @@ int main(int c, char *v[]) {
     printf("Reduce performance= %.2f GB/s, Time= %.3f msec, Size= %.0f KB\n",
         gigaBytePerSec, msecPerRun, dataSize/1024);
 
+       
     
+    for (int i = 0; i < data_len; i++) data_h[i] = (half)(mype+(1.0/PKTSIZE)*i);
+    cudaMemcpyAsync(data1, data_h, sizeof(half) * data_len, cudaMemcpyHostToDevice, stream1);
+    half *buf1 = (half *)nvshmem_malloc(sizeof(half) * data_len*ndev);
+    half *buf_h = (half *)malloc(sizeof(half) * data_len*ndev);
+    nvshmemx_barrier_all_on_stream(stream1);
+    void *args_ag1[] = {&data1, &buf1, &data_len, &psync1, &dim1, &ndev};
+    NVSHMEM_CHECK(nvshmemx_collective_launch((const void *)mesh_allgather, gridDim, blockDim, args_ag1, 0, stream1));
+    nvshmemx_barrier_all_on_stream(stream1);
+
+    printf("Benchmarking AllGather at dim=1, \n");
+    // Record the start event
+    CUDA_CHECK(cudaEventRecord(start, NULL));
     
+    for (int j = 0; j < REPEAT; j++) {
+        nvshmemx_collective_launch((const void *)mesh_allgather, gridDim, blockDim, args_ag1, 0, stream1);
+        nvshmemx_barrier_all_on_stream(stream1);
+    }
+    
+    // Record the stop event
+    CUDA_CHECK(cudaEventRecord(stop, NULL));
+
+    // Wait for the stop event to complete
+    CUDA_CHECK(cudaEventSynchronize(stop));
+
+    msecTotal = 0.0f;
+    CUDA_CHECK(cudaEventElapsedTime(&msecTotal, start, stop));
+    //cudaStreamSynchronize(stream1);
+    // Compute and print the performance
+    msecPerRun = msecTotal / REPEAT;
+    dataSize = 2.0 * data_len * (ndev-1);
+    gigaBytePerSec =
+        (dataSize * 1.0e-9f) / (msecPerRun / 1000.0f);
+    printf("AllGather performance= %.2f GB/s, Time= %.3f msec, Size= %.0f KB\n",
+        gigaBytePerSec, msecPerRun, dataSize/1024);
+
+    
+    void *args_RS0[] = {&data0, &buf0, &data_len, &psync0, &dim0, &ndev};
+    nvshmemx_barrier_all_on_stream(stream0);
+    nvshmemx_collective_launch((const void *)mesh_reducescatter, gridDim, blockDim, args_RS0, 0, stream0);
+    nvshmemx_barrier_all_on_stream(stream0);
+    printf("Benchmarking ReduceScatter at dim=0, \n");
+    // Record the start event
+    CUDA_CHECK(cudaEventRecord(start, NULL));
+    
+    for (int j = 0; j < REPEAT; j++) {
+        nvshmemx_collective_launch((const void *)mesh_reducescatter, gridDim, blockDim, args_RS0, 0, stream0);
+        nvshmemx_barrier_all_on_stream(stream0);
+    }
+    
+    // Record the stop event
+    CUDA_CHECK(cudaEventRecord(stop, NULL));
+
+    // Wait for the stop event to complete
+    CUDA_CHECK(cudaEventSynchronize(stop));
+
+    msecTotal = 0.0f;
+    CUDA_CHECK(cudaEventElapsedTime(&msecTotal, start, stop));
+    //cudaStreamSynchronize(stream1);
+    // Compute and print the performance
+    msecPerRun = msecTotal / REPEAT;
+    dataSize = 2.0 * data_len * (ndev-1);
+    gigaBytePerSec =
+        (dataSize * 1.0e-9f) / (msecPerRun / 1000.0f);
+    printf("ReduceScatter performance= %.2f GB/s, Time= %.3f msec, Size= %.0f KB\n",
+        gigaBytePerSec, msecPerRun, dataSize/1024);
+    
+    NVSHMEM_CHECK(nvshmemx_collective_launch((const void *)mesh_allgather, gridDim, blockDim, args_ag1, 0, stream1));
+    nvshmemx_barrier_all_on_stream(stream1);
+    nvshmemx_collective_launch((const void *)mesh_reducescatter, gridDim, blockDim, args_RS0, 0, stream0);
+    nvshmemx_barrier_all_on_stream(stream0);
+
+    printf("Benchmarking overlapped AG+RS at dim=0, \n");
+
+    // Record the start event
+    CUDA_CHECK(cudaEventRecord(start, NULL));
+    
+    for (int j = 0; j < REPEAT; j++) {
+        nvshmemx_collective_launch((const void *)mesh_allgather, gridDim, blockDim, args_ag1, 0, stream1);
+        nvshmemx_collective_launch((const void *)mesh_reducescatter, gridDim, blockDim, args_RS0, 0, stream0);
+        nvshmemx_barrier_all_on_stream(stream1);
+        nvshmemx_barrier_all_on_stream(stream0);
+    }
+    
+    // Record the stop event
+    CUDA_CHECK(cudaEventRecord(stop, NULL));
+
+    // Wait for the stop event to complete
+    CUDA_CHECK(cudaEventSynchronize(stop));
+
+    msecTotal = 0.0f;
+    CUDA_CHECK(cudaEventElapsedTime(&msecTotal, start, stop));
+
+    // Compute and print the performance
+    msecPerRun = msecTotal / REPEAT;
+    dataSize = 2.0 * data_len * (ndev-1)*2;
+    gigaBytePerSec =
+        (dataSize * 1.0e-9f) / (msecPerRun / 1000.0f);
+    printf("Overlapped performance= %.2f GB/s, Time= %.3f msec, Size= %.0f KB\n",
+        gigaBytePerSec, msecPerRun, dataSize/1024);
+    /*
+    printf("Benchmarking Overlapped Broadcast+Reduce\n");
+    // Record the start event
+    CUDA_CHECK(cudaEventRecord(start, NULL));
+    
+    for (int j = 0; j < 2*REPEAT; j++) {
+        root = j%2;
+        nvshmemx_collective_launch((const void *)mesh_bcast, gridDim, blockDim, args, 0, stream0);
+        nvshmemx_collective_launch((const void *)mesh_reduce, gridDim, blockDim, args_reduce1, 0, stream1);
+        nvshmemx_barrier_all_on_stream(stream0);
+        nvshmemx_barrier_all_on_stream(stream1);
+    }
+    
+    // Record the stop event
+    CUDA_CHECK(cudaEventRecord(stop, NULL));
+
+    // Wait for the stop event to complete
+    CUDA_CHECK(cudaEventSynchronize(stop));
+
+    msecTotal = 0.0f;
+    CUDA_CHECK(cudaEventElapsedTime(&msecTotal, start, stop));
+
+
+    // Compute and print the performance
+    msecPerRun = msecTotal / REPEAT / 2;
+    dataSize = 2.0 * data_len*2;
+    gigaBytePerSec =
+        (dataSize * 1.0e-9f) / (msecPerRun / 1000.0f);
+    printf("Parallel performance= %.2f GB/s, Time= %.3f msec, Size= %.0f KB\n",
+        gigaBytePerSec, msecPerRun, dataSize/1024);
+    */
     printf("Done\n");
     nvshmem_free(data0);
     nvshmem_free(data1);
     nvshmem_free(psync0);
     nvshmem_free(psync1);
-    //nvshmem_free(buf0);
-    //nvshmem_free(buf1);
+    nvshmem_free(buf0);
+    nvshmem_free(buf1);
 
     free(data_h);
 

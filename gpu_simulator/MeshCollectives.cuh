@@ -137,13 +137,13 @@ mesh_allgather(half *shard, half *buf, size_t nelem,
     //First, my shard is written to the buffer
     half2* mypos = (half2*)&buf[nelem*local_id + offset];
     half2* shard2 = (half2*)&shard[offset];
+    
     for (int idx = threadIdx.x; idx < elemcount/2; idx += blockDim.x){
         mypos[idx] = shard2[idx];
     }
     __syncthreads();
     int mydev = local_id;
     for (size_t iter=0; iter < ndev-1; iter++){
-        
         mypos = (half2*)&buf[nelem*mydev + offset];
         nvshmem_signal_wait_until(mysync, NVSHMEM_CMP_GT, iter);
         nvshmemx_put32_block((void*)mypos, (void*)mypos, elemcount/2, peer);

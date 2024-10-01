@@ -27,9 +27,6 @@ TestNVSHMEM.o:TestNVSHMEM.cu RingCollectives.cuh
 TestNVSHMEM: TestNVSHMEM.o
 	$(NVCC) $(GENCODE_FLAGS) -o $@ $+ $(NVCC_LDFLAGS)
 
-TestNVSHMEM.o:TestNVSHMEM.cu RingCollectives.cuh
-	$(NVCC) $(NVCC_FLAGS) -o $@ -c $<
-
 TestMesh.o:TestMesh.cu MeshCollectives.cuh
 	$(NVCC) $(NVCC_FLAGS) -o $@ -c $<
 

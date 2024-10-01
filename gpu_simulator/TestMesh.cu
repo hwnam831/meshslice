@@ -3,9 +3,9 @@
 #include <string>
 #include "MeshCollectives.cuh"
 
-#define PKTSIZE 256
+#define PKTSIZE 1024
 #define NELEM 8192
-#define THREADS_PER_BLOCK 128
+#define THREADS_PER_BLOCK 512
 
 int main(int c, char *v[]) {
     
