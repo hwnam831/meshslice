@@ -7,7 +7,7 @@ NVCC_LDFLAGS 	+= -L$(NVSHMEM_HOME)/lib -lnvshmem
 
 all: build
 
-build: TestCUBLAS BenchNVSHMEM TestNVSHMEM
+build: TestCUBLAS BenchNVSHMEM TestNVSHMEM TestMesh BenchMesh
 
 TestCUBLAS.o:TestCUBLAS.cu cuda_helper.h
 	$(NVCC) $(NVCC_FLAGS) -o $@ -c $<
@@ -25,6 +25,21 @@ TestNVSHMEM.o:TestNVSHMEM.cu RingCollectives.cuh
 	$(NVCC) $(NVCC_FLAGS) -o $@ -c $<
 
 TestNVSHMEM: TestNVSHMEM.o
+	$(NVCC) $(GENCODE_FLAGS) -o $@ $+ $(NVCC_LDFLAGS)
+
+TestNVSHMEM.o:TestNVSHMEM.cu RingCollectives.cuh
+	$(NVCC) $(NVCC_FLAGS) -o $@ -c $<
+
+TestMesh.o:TestMesh.cu MeshCollectives.cuh
+	$(NVCC) $(NVCC_FLAGS) -o $@ -c $<
+
+TestMesh: TestMesh.o
+	$(NVCC) $(GENCODE_FLAGS) -o $@ $+ $(NVCC_LDFLAGS)
+
+BenchMesh.o:BenchMesh.cu MeshCollectives.cuh
+	$(NVCC) $(NVCC_FLAGS) -o $@ -c $<
+
+BenchMesh: BenchMesh.o
 	$(NVCC) $(GENCODE_FLAGS) -o $@ $+ $(NVCC_LDFLAGS)
 
 

@@ -28,7 +28,7 @@ mesh_bcast(half *data, size_t nelem, size_t pkt_size,
     int mycol = mype % 2;
     int peer = dim == 0?
                ((myrow+1)%2)*2 + mycol : myrow*2 + (mycol+1)%2;
-    int local_id = dim == 0?: myrow: mycol;
+    int local_id = dim == 0? myrow: mycol;
     size_t npackets = (nelem/2/g_y + pkt_size-1) / pkt_size;
 
     uint64_t *mysync = &psync[direction + 2*yidx];
@@ -70,7 +70,7 @@ mesh_reduce(half *data, half* tmp, size_t nelem,size_t pkt_size,
     int mycol = mype % 2;
     int peer = dim == 0?
                ((myrow+1)%2)*2 + mycol : myrow*2 + (mycol+1)%2;
-    int local_id = dim == 0?: myrow: mycol;
+    int local_id = dim == 0? myrow: mycol;
 
     size_t npackets = (nelem/2/g_y + pkt_size-1) / pkt_size;
 
@@ -88,13 +88,14 @@ mesh_reduce(half *data, half* tmp, size_t nelem,size_t pkt_size,
         nvshmem_quiet();
         half2* pos2 = (half2*)pos;
         half2* mytmp2 = (half2*) mytmp;
-#pragma unroll
+
         for (int mypos = threadIdx.x; mypos < pkt_size/2; mypos += blockDim.x){
-            mytmp2[mypos] += pos[mypos];
+            mytmp2[mypos] += pos2[mypos];
         }
+        __syncthreads();
         nvshmemx_signal_op(mysync, 1, NVSHMEM_SIGNAL_ADD, peer);
     }
-    if (local_id 1= root) return;
+    if (local_id != root) return;
 
     
     for (int idx=0; idx < npackets; idx++){
@@ -104,10 +105,11 @@ mesh_reduce(half *data, half* tmp, size_t nelem,size_t pkt_size,
         nvshmem_quiet();
         half2* pos2 = (half2*)pos;
         half2* mytmp2 = (half2*) mytmp;
-#pragma unroll
+
         for (int mypos = threadIdx.x; mypos < elemcount/2; mypos += blockDim.x){
             pos2[mypos] += mytmp2[mypos];
         }
+        __syncthreads();
         nvshmemx_signal_op(mysync, idx+1, NVSHMEM_SIGNAL_SET, peer);
     }
     
@@ -128,7 +130,7 @@ mesh_allgather(half *shard, half *buf, size_t nelem,
     int mycol = mype % 2;
     int peer = dim == 0?
                ((myrow+1)%2)*2 + mycol : myrow*2 + (mycol+1)%2;
-    int local_id = dim == 0?: myrow: mycol;
+    int local_id = dim == 0? myrow: mycol;
 
     uint64_t *mysync = &psync[direction + 2*yidx];
     *mysync = 1;
@@ -168,7 +170,7 @@ mesh_reducescatter(half *shard, half *buf, size_t nelem,
     int mycol = mype % 2;
     int peer = dim == 0?
                ((myrow+1)%2)*2 + mycol : myrow*2 + (mycol+1)%2;
-    int local_id = dim == 0?: myrow: mycol;
+    int local_id = dim == 0? myrow: mycol;
 
     uint64_t *mysync = &psync[direction + 2*yidx];
     *mysync = 0;
@@ -192,7 +194,7 @@ mesh_reducescatter(half *shard, half *buf, size_t nelem,
             mypos2[idx] = mypos2[idx] + myshard2[idx];
         }
         __syncthreads();
-        nvshmemx_signal_op(mysync, iter+1, NVSHMEM_SIGNAL_SET, mynext);
+        nvshmemx_signal_op(mysync, iter+1, NVSHMEM_SIGNAL_SET, peer);
     }
     
     mypos = &buf[nelem*local_id + offset];
