@@ -7,7 +7,7 @@
 #define NBLOCKS 16
 #define NELEM PKTSIZE*NBLOCKS*2*10
 #define THREADS_PER_BLOCK 512
-#define REPEAT 10
+#define REPEAT 20
 
 // mpirun -n 4 datalen pktsize ndev g_y
 int main(int c, char *v[]) {
@@ -65,7 +65,7 @@ int main(int c, char *v[]) {
     
     dim3 gridDim(2, g_y), blockDim(THREADS_PER_BLOCK);
     void *args[] = {&data0, &data_len, &pkt_size, &root, &psync0, &dim0, &ndev};
-    printf("\nRunning benchmark for datalen %d, pktsize %d, ndev %d, numCTA %d:\n",data_len, pkt_size, ndev, g_y*2,);
+    printf("\nRunning benchmark for datalen %d, pktsize %d, ndev %d, numCTA %d:\n",data_len, pkt_size, ndev, g_y*2);
 
     printf("Benchmarking Broadcast at dim=0, \n");
     nvshmemx_barrier_all_on_stream(stream0);
