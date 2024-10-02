@@ -9,7 +9,7 @@ all: build
 
 build: TestCUBLAS BenchNVSHMEM TestNVSHMEM TestMesh BenchMesh
 
-TestCUBLAS.o:TestCUBLAS.cu cuda_helper.h
+TestCUBLAS.o:TestCUBLAS.cu cublas_helper.h
 	$(NVCC) $(NVCC_FLAGS) -o $@ -c $<
 
 TestCUBLAS: TestCUBLAS.o

@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <string>
 #include "MeshCollectives.cuh"
+#include "cublas_helper.h"
 
 #define PKTSIZE 32768
 #define NBLOCKS 16
@@ -18,7 +19,7 @@ int main(int c, char *v[]) {
     MPI_Comm mpi_comm;
     nvshmemx_init_attr_t attr;
     int mype, mype_node;
-    cudaStream_t stream0, stream1;
+    cudaStream_t stream0, stream1, stream_compute;
 
     if (c > 1) data_len = std::stoi(v[1]);//printf("v[1] is %d\t", std::stoi(v[1]));
 
@@ -211,16 +212,65 @@ int main(int c, char *v[]) {
     nvshmemx_collective_launch((const void *)mesh_reducescatter, gridDim, blockDim, args_RS0, 0, stream0);
     nvshmemx_barrier_all_on_stream(stream0);
 
-    printf("Benchmarking overlapped AG+RS at dim=0, \n");
+
+    const half alpha = 1.0f;
+    const half beta = 0.0f;
+    cublasHandle_t handle;
+    checkCudaErrors(cublasCreate(&handle));
+    CUDA_CHECK(cudaStreamCreate(&stream_compute));
+    size_t M = 8192;
+    size_t N = 8192;
+    size_t K = data_len / 8192;
+    half* A = initMatrix(M,K,1);
+    half* B = initMatrix(N,K,2);
+    half* C = initMatrix(M,N,0);
+    checkCudaErrors(cublasSetStream(handle, stream_compute));
+    checkCudaErrors(cublasHgemm(
+        handle, CUBLAS_OP_N, CUBLAS_OP_N, N, M,
+        K, &alpha, B, N, A, K,
+        &beta, C, N));
+
+
+    printf("Benchmarking CUBLAS of M:%d, N:%d, K:%d\n",M,N,K);
+    CUDA_CHECK(cudaEventRecord(start, NULL));
+    
+    for (int j = 0; j < REPEAT; j++) {
+        checkCudaErrors(cublasHgemm(
+        handle, CUBLAS_OP_N, CUBLAS_OP_N, N, M,
+        K, &alpha, B, N, A, K,
+        &beta, C, N));
+    }
+    // Record the stop event
+    CUDA_CHECK(cudaEventRecord(stop, NULL));
+
+    // Wait for the stop event to complete
+    CUDA_CHECK(cudaEventSynchronize(stop));
+
+    msecTotal = 0.0f;
+    CUDA_CHECK(cudaEventElapsedTime(&msecTotal, start, stop));
+
+    // Compute and print the performance
+    msecPerRun = msecTotal / REPEAT;
+    dataSize = 2.0 * M*N*K;
+    gigaBytePerSec =
+        (dataSize * 1.0e-9f) / (msecPerRun / 1000.0f);
+    printf("CUBLAS performance= %.2f GFLOP/s, Time= %.3f msec\n",
+        gigaBytePerSec, msecPerRun);
+    
+    printf("Benchmarking overlapped CUBLAS + RS at dim=0, \n");
 
     // Record the start event
     CUDA_CHECK(cudaEventRecord(start, NULL));
     
     for (int j = 0; j < REPEAT; j++) {
-        nvshmemx_collective_launch((const void *)mesh_allgather, gridDim, blockDim, args_ag1, 0, stream1);
-        nvshmemx_collective_launch((const void *)mesh_reducescatter, gridDim, blockDim, args_RS0, 0, stream0);
-        nvshmemx_barrier_all_on_stream(stream1);
+        mesh_reducescatter<<<gridDim, blockDim, 0, stream0>>>(data0, buf0, data_len, psync0, dim0, ndev);
+        checkCudaErrors(cublasHgemm(
+            handle, CUBLAS_OP_N, CUBLAS_OP_N, N, M,
+            K, &alpha, B, N, A, K,
+            &beta, C, N));
+        
         nvshmemx_barrier_all_on_stream(stream0);
+        cudaStreamSynchronize(stream_compute);
     }
     
     // Record the stop event
@@ -234,11 +284,12 @@ int main(int c, char *v[]) {
 
     // Compute and print the performance
     msecPerRun = msecTotal / REPEAT;
-    dataSize = 2.0 * data_len * (ndev-1)*2;
+    dataSize = 2.0 * M*N*K;
     gigaBytePerSec =
         (dataSize * 1.0e-9f) / (msecPerRun / 1000.0f);
-    printf("Overlapped performance= %.2f GB/s, Time= %.3f msec, Size= %.0f KB\n",
-        gigaBytePerSec, msecPerRun, dataSize/1024);
+    printf("Overlapped HGeMM performance= %.2f GFLOP/s, Time= %.3f msec\n",
+        gigaBytePerSec, msecPerRun);
+    
     /*
     printf("Benchmarking Overlapped Broadcast+Reduce\n");
     // Record the start event

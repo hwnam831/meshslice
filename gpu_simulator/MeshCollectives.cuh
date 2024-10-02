@@ -39,7 +39,7 @@ mesh_bcast(half *data, size_t nelem, size_t pkt_size,
     half* pos = data + offset;
     for (int repeat = 0; repeat < (ndev-2)/2; repeat++){
         nvshmem_signal_wait_until(mysync, NVSHMEM_CMP_GT, repeat);
-        nvshmemx_put16_block((void*)pos, (void*)pos, pkt_size, peer);
+        nvshmemx_put16_nbi_block((void*)pos, (void*)pos, pkt_size, peer);
         nvshmem_quiet();
         nvshmemx_signal_op(mysync, 1, NVSHMEM_SIGNAL_ADD, peer);
     }
@@ -50,7 +50,7 @@ mesh_bcast(half *data, size_t nelem, size_t pkt_size,
     for (int idx=0; idx < npackets; idx++){
         pos = data + offset + idx*pkt_size;
         int elemcount = (idx+1)*pkt_size > nelem/2/g_y? (nelem/2/g_y) - idx*pkt_size : pkt_size;
-        nvshmemx_put16_block((void*)pos, (void*)pos, elemcount, peer);
+        nvshmemx_put16_nbi_block((void*)pos, (void*)pos, elemcount, peer);
         nvshmem_quiet();
         nvshmemx_signal_op(mysync, idx+1, NVSHMEM_SIGNAL_SET, peer);
     }
@@ -84,7 +84,7 @@ mesh_reduce(half *data, half* tmp, size_t nelem,size_t pkt_size,
     half* mytmp = tmp + direction*pkt_size + yidx*2*pkt_size;
     for (int repeat = 0; repeat < (ndev-2)/2; repeat++){
         nvshmem_signal_wait_until(mysync, NVSHMEM_CMP_GT, repeat);
-        nvshmemx_get16_block((void*)mytmp, (void*)pos, pkt_size, peer);
+        nvshmemx_get16_nbi_block((void*)mytmp, (void*)pos, pkt_size, peer);
         nvshmem_quiet();
         half2* pos2 = (half2*)pos;
         half2* mytmp2 = (half2*) mytmp;
@@ -101,7 +101,7 @@ mesh_reduce(half *data, half* tmp, size_t nelem,size_t pkt_size,
     for (int idx=0; idx < npackets; idx++){
         pos = data + offset + idx*pkt_size;
         int elemcount = (idx+1)*pkt_size > nelem/2/g_y? (nelem/2/g_y) - idx*pkt_size : pkt_size;
-        nvshmemx_get16_block((void*)mytmp, (void*)pos, elemcount, peer);
+        nvshmemx_get16_nbi_block((void*)mytmp, (void*)pos, elemcount, peer);
         nvshmem_quiet();
         half2* pos2 = (half2*)pos;
         half2* mytmp2 = (half2*) mytmp;
@@ -146,7 +146,7 @@ mesh_allgather(half *shard, half *buf, size_t nelem,
     for (size_t iter=0; iter < ndev-1; iter++){
         mypos = (half2*)&buf[nelem*mydev + offset];
         nvshmem_signal_wait_until(mysync, NVSHMEM_CMP_GT, iter);
-        nvshmemx_put32_block((void*)mypos, (void*)mypos, elemcount/2, peer);
+        nvshmemx_put32_nbi_block((void*)mypos, (void*)mypos, elemcount/2, peer);
         nvshmem_quiet();
         nvshmemx_signal_op(mysync, iter+2, NVSHMEM_SIGNAL_SET, peer);
         mydev = direction == 0 ?
@@ -187,7 +187,7 @@ mesh_reducescatter(half *shard, half *buf, size_t nelem,
             (curpe+1)%ndev : (curpe + ndev - 1) % ndev;
         mypos = &buf[nelem*curpe + offset];
         nvshmem_signal_wait_until(mysync, NVSHMEM_CMP_EQ, iter);
-        nvshmemx_get32_block((void*)myshard, (void*)mypos, elemcount/2, peer);
+        nvshmemx_get32_nbi_block((void*)myshard, (void*)mypos, elemcount/2, peer);
         nvshmem_quiet();
         mypos2 = (half2*)mypos;
         for (int idx = threadIdx.x; idx < elemcount/2; idx += blockDim.x){

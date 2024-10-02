@@ -14,20 +14,7 @@
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
 
-#include "cuda_helper.h"
-
-half* initMatrix(size_t H, size_t W, int val){
-    half* buf_h = (half *)malloc(sizeof(half) * H * W);
-    for (int i=0; i<H*W; i++)
-        buf_h[i] = (half)val;
-    half* buf_d = NULL;
-    CUDA_RT_CALL(cudaMalloc(reinterpret_cast<void **>(&buf_d),
-                             sizeof(half) * H * W));
-    CUDA_RT_CALL(cudaMemcpy(buf_d, buf_h, sizeof(half) * H * W,
-                             cudaMemcpyHostToDevice));
-    free(buf_h);
-    return buf_d;
-}
+#include "cublas_helper.h"
 
 #define M 2560
 #define N 2048
