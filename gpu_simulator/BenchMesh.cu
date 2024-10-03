@@ -44,8 +44,8 @@ int main(int c, char *v[]) {
 
     // application picks the device each PE will use
     CUDA_CHECK(cudaSetDevice(mype_node));
-    CUDA_CHECK(cudaStreamCreate(&stream0));
-    CUDA_CHECK(cudaStreamCreate(&stream1));
+    CUDA_CHECK(cudaStreamCreateWithFlags(&stream0, cudaStreamNonBlocking));
+    CUDA_CHECK(cudaStreamCreateWithFlags(&stream1, cudaStreamNonBlocking));
     half *data0 = (half *)nvshmem_malloc(sizeof(half) * data_len);
     half *data1 = (half *)nvshmem_malloc(sizeof(half) * data_len);
 
@@ -77,7 +77,7 @@ int main(int c, char *v[]) {
     CUDA_CHECK(cudaEventCreate(&start));
     CUDA_CHECK(cudaEventCreate(&stop));
     // Record the start event
-    CUDA_CHECK(cudaEventRecord(start, NULL));
+    CUDA_CHECK(cudaEventRecord(start, stream0));
     
     for (int j = 0; j < 2*REPEAT; j++) {
         root = j%2;
@@ -86,7 +86,7 @@ int main(int c, char *v[]) {
     }
     
     // Record the stop event
-    CUDA_CHECK(cudaEventRecord(stop, NULL));
+    CUDA_CHECK(cudaEventRecord(stop, stream0));
 
     // Wait for the stop event to complete
     CUDA_CHECK(cudaEventSynchronize(stop));
@@ -113,7 +113,7 @@ int main(int c, char *v[]) {
     
     printf("Benchmarking Reduce at dim=1, \n");
     // Record the start event
-    CUDA_CHECK(cudaEventRecord(start, NULL));
+    CUDA_CHECK(cudaEventRecord(start, stream1));
     
     for (int j = 0; j < 2*REPEAT; j++) {
         root = j%2;
@@ -122,7 +122,7 @@ int main(int c, char *v[]) {
     }
     
     // Record the stop event
-    CUDA_CHECK(cudaEventRecord(stop, NULL));
+    CUDA_CHECK(cudaEventRecord(stop, stream1));
 
     // Wait for the stop event to complete
     CUDA_CHECK(cudaEventSynchronize(stop));
@@ -152,7 +152,7 @@ int main(int c, char *v[]) {
 
     printf("Benchmarking AllGather at dim=1, \n");
     // Record the start event
-    CUDA_CHECK(cudaEventRecord(start, NULL));
+    CUDA_CHECK(cudaEventRecord(start, stream1));
     
     for (int j = 0; j < REPEAT; j++) {
         nvshmemx_collective_launch((const void *)mesh_allgather, gridDim, blockDim, args_ag1, 0, stream1);
@@ -160,7 +160,7 @@ int main(int c, char *v[]) {
     }
     
     // Record the stop event
-    CUDA_CHECK(cudaEventRecord(stop, NULL));
+    CUDA_CHECK(cudaEventRecord(stop, stream1));
 
     // Wait for the stop event to complete
     CUDA_CHECK(cudaEventSynchronize(stop));
@@ -183,7 +183,7 @@ int main(int c, char *v[]) {
     nvshmemx_barrier_all_on_stream(stream0);
     printf("Benchmarking ReduceScatter at dim=0, \n");
     // Record the start event
-    CUDA_CHECK(cudaEventRecord(start, NULL));
+    CUDA_CHECK(cudaEventRecord(start, stream0));
     
     for (int j = 0; j < REPEAT; j++) {
         nvshmemx_collective_launch((const void *)mesh_reducescatter, gridDim, blockDim, args_RS0, 0, stream0);
@@ -191,7 +191,7 @@ int main(int c, char *v[]) {
     }
     
     // Record the stop event
-    CUDA_CHECK(cudaEventRecord(stop, NULL));
+    CUDA_CHECK(cudaEventRecord(stop, stream0));
 
     // Wait for the stop event to complete
     CUDA_CHECK(cudaEventSynchronize(stop));
@@ -217,7 +217,7 @@ int main(int c, char *v[]) {
     const half beta = 0.0f;
     cublasHandle_t handle;
     checkCudaErrors(cublasCreate(&handle));
-    CUDA_CHECK(cudaStreamCreate(&stream_compute));
+    CUDA_CHECK(cudaStreamCreateWithFlags(&stream_compute, cudaStreamNonBlocking));
     size_t M = 8192;
     size_t N = 8192;
     size_t K = data_len / 8192;
@@ -232,7 +232,7 @@ int main(int c, char *v[]) {
 
 
     printf("Benchmarking CUBLAS of M:%d, N:%d, K:%d\n",M,N,K);
-    CUDA_CHECK(cudaEventRecord(start, NULL));
+    CUDA_CHECK(cudaEventRecord(start, stream_compute));
     
     for (int j = 0; j < REPEAT; j++) {
         checkCudaErrors(cublasHgemm(
@@ -241,7 +241,7 @@ int main(int c, char *v[]) {
         &beta, C, N));
     }
     // Record the stop event
-    CUDA_CHECK(cudaEventRecord(stop, NULL));
+    CUDA_CHECK(cudaEventRecord(stop, stream_compute));
 
     // Wait for the stop event to complete
     CUDA_CHECK(cudaEventSynchronize(stop));
@@ -256,23 +256,32 @@ int main(int c, char *v[]) {
         (dataSize * 1.0e-9f) / (msecPerRun / 1000.0f);
     printf("CUBLAS performance= %.2f GFLOP/s, Time= %.3f msec\n",
         gigaBytePerSec, msecPerRun);
-    
-    printf("Benchmarking overlapped CUBLAS + RS at dim=0, \n");
+    /*
+    printf("Benchmarking overlapped CUBLAS + AG at dim=1, \n");
 
+    cudaStreamSynchronize(stream_compute);
+    cudaStreamSynchronize(stream1);
     // Record the start event
     CUDA_CHECK(cudaEventRecord(start, NULL));
-    
+    cudaEvent_t sync_compute, sync_comm;
+    CUDA_CHECK(cudaEventCreate(&sync_compute));
+    CUDA_CHECK(cudaEventCreate(&sync_comm));
     for (int j = 0; j < REPEAT; j++) {
-        mesh_reducescatter<<<gridDim, blockDim, 0, stream0>>>(data0, buf0, data_len, psync0, dim0, ndev);
+        
+        nvshmemx_collective_launch((const void *)mesh_allgather, gridDim, blockDim, args_ag1, 0, stream1);
+        //mesh_reducescatter<<<gridDim, blockDim, 0, stream0>>>(data0, buf0, data_len, psync0, dim0, ndev);
         checkCudaErrors(cublasHgemm(
             handle, CUBLAS_OP_N, CUBLAS_OP_N, N, M,
             K, &alpha, B, N, A, K,
             &beta, C, N));
+        cudaEventRecord(sync_comm, stream1);
+        cudaEventRecord(sync_computes, stream_compute);
+        cudaStreamWaitEvent(stream_compute, sync_comm);
+        cudaStreamWaitEvent(stream1, sync_compute);
         
-        nvshmemx_barrier_all_on_stream(stream0);
-        cudaStreamSynchronize(stream_compute);
     }
-    
+    cudaStreamSynchronize(stream_compute);
+    cudaStreamSynchronize(stream1);
     // Record the stop event
     CUDA_CHECK(cudaEventRecord(stop, NULL));
 
@@ -289,20 +298,25 @@ int main(int c, char *v[]) {
         (dataSize * 1.0e-9f) / (msecPerRun / 1000.0f);
     printf("Overlapped HGeMM performance= %.2f GFLOP/s, Time= %.3f msec\n",
         gigaBytePerSec, msecPerRun);
-    
-    /*
-    printf("Benchmarking Overlapped Broadcast+Reduce\n");
+    */
+    //TODO try cudagraph?
+    printf("Benchmarking overlapped RS + AG\n");
+
+    cudaStreamSynchronize(stream0);
+    cudaStreamSynchronize(stream1);
     // Record the start event
     CUDA_CHECK(cudaEventRecord(start, NULL));
-    
-    for (int j = 0; j < 2*REPEAT; j++) {
-        root = j%2;
-        nvshmemx_collective_launch((const void *)mesh_bcast, gridDim, blockDim, args, 0, stream0);
-        nvshmemx_collective_launch((const void *)mesh_reduce, gridDim, blockDim, args_reduce1, 0, stream1);
-        nvshmemx_barrier_all_on_stream(stream0);
-        nvshmemx_barrier_all_on_stream(stream1);
+    for (int j = 0; j < REPEAT; j++) {
+        //nvshmemx_collective_launch((const void *)mesh_allgather, gridDim, blockDim, args_ag1, 0, stream1);
+        //{&data1, &buf1, &data_len, &psync1, &dim1, &ndev}
+        mesh_allgather<<<gridDim, blockDim, 0, stream1>>>(data1, buf1, data_len, psync1, dim1, ndev);
+        mesh_reducescatter<<<gridDim, blockDim, 0, stream0>>>(data0, buf0, data_len, psync0, dim0, ndev);
+        //nvshmemx_collective_launch((const void *)mesh_reducescatter, gridDim, blockDim, args_RS0, 0, stream0);
+        nvshmemx_quiet_on_stream(stream1);
+        nvshmemx_quiet_on_stream(stream0);
     }
-    
+    cudaStreamSynchronize(stream0);
+    cudaStreamSynchronize(stream1);
     // Record the stop event
     CUDA_CHECK(cudaEventRecord(stop, NULL));
 
@@ -312,15 +326,15 @@ int main(int c, char *v[]) {
     msecTotal = 0.0f;
     CUDA_CHECK(cudaEventElapsedTime(&msecTotal, start, stop));
 
-
     // Compute and print the performance
-    msecPerRun = msecTotal / REPEAT / 2;
-    dataSize = 2.0 * data_len*2;
+    msecPerRun = msecTotal / REPEAT;
+    dataSize = 2.0 * data_len * (ndev-1);
     gigaBytePerSec =
         (dataSize * 1.0e-9f) / (msecPerRun / 1000.0f);
-    printf("Parallel performance= %.2f GB/s, Time= %.3f msec, Size= %.0f KB\n",
+    printf("Overlapped performance= %.2f GB/s, Time= %.3f msec, Size= %.0f KB\n",
         gigaBytePerSec, msecPerRun, dataSize/1024);
-    */
+
+
     printf("Done\n");
     nvshmem_free(data0);
     nvshmem_free(data1);

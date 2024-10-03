@@ -1,0 +1,5 @@
+✔ Allgather ReduceScatter @done(24-09-25 16:21)
+✘ Double buffering reduce/reducescatter? @cancelled(24-09-26 17:14)
+✔ Mesh Simulator (collective and MeshFlow first) @done(24-10-01 14:02)
+☐ Overlap CUBLAS with Collective
+☐ Latency Benchmark
