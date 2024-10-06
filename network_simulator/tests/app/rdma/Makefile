@@ -15,7 +15,7 @@ LIBS=-lrdma -L$(ARCH)
 
 OBJS=$(ARCH)/base.o $(ARCH)/rdma.o
 
-all: librdma.a write msg incast incast-v2 barrier
+all: librdma.a write msg incast incast-v2 barrier sendrecv
 librdma.a: ${OBJS}
 	$(AR) rcs $(ARCH)/librdma.a $^
 
@@ -39,6 +39,9 @@ incast-v2: incast-v2.c $(ARCH)/librdma.a
 
 barrier: barrier.c $(ARCH)/librdma.a
 	$(CC) $(CFLAGS) -static -o $(ARCH)/$@ $< $(LIBS) 
+
+sendrecv: sendrecv.c $(ARCH)/librdma.a
+	$(CC) $(CFLAGS) -O3 -static -o $(ARCH)/$@ $< $(LIBS) 
 
 clean:
 	rm -f $(ARCH)/librdma.a $(ARCH)/${OBJS} $(ARCH)/msg $(ARCH)/write $(ARCH)/incast $(ARCH)/incast-v2 $(ARCH)/barrier

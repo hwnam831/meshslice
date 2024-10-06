@@ -13,8 +13,8 @@ sst.setProgramOption("timebase", "1ps")
 
 networkParams = {
     "packetSize" : "2048B",
-    "link_bw" : "16GB/s",
-    "xbar_bw" : "16GB/s",
+    "link_bw" : "32GB/s",
+    "xbar_bw" : "32GB/s",
 
     "link_lat" : "10ns",
     "input_latency" : "10ns",
@@ -24,10 +24,10 @@ networkParams = {
 #    "output_latency" : "50ns",
 
     "flitSize" : "8B",
-    #"input_buf_size" : "30KB",
-    #"output_buf_size" : "30KB",
-    "input_buf_size" : "14KB",
-    "output_buf_size" : "14KB",
+    "input_buf_size" : "30KB",
+    "output_buf_size" : "30KB",
+    #"input_buf_size" : "14KB",
+    #"output_buf_size" : "14KB",
 }
 
 sst.merlin._params["link_lat"] = networkParams['link_lat']

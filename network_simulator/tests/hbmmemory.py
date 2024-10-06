@@ -26,8 +26,8 @@ class Builder:
 
         self.chiprtr = sst.Component(self.prefix + ".chiprtr", "merlin.hr_router")
         self.chiprtr.addParams({
-            "xbar_bw" : "256GB/s",
-            "link_bw" : "256GB/s",
+            "xbar_bw" : "300GB/s",
+            "link_bw" : "300GB/s",
             "input_buf_size" : "40KB",
             "output_buf_size" : "40KB",
             "num_ports" : str(self.numPorts + 1),
@@ -43,7 +43,9 @@ class Builder:
             "coherence_protocol" : coherence_protocol,
             "entry_cache_size" : "1024",
             "addr_range_start" : "0x0",
-            "addr_range_end" : "0x7fffffff",
+            "addr_range_end" : "0xffffffff",
+            "interleave_size" : "64B",
+            "interleave_step" : "128B",
             "debug": dc_debug,
             "debug_level" : 11,
             "debug_addr" : debug_addr,
@@ -53,12 +55,13 @@ class Builder:
 
         memctrl = sst.Component(self.prefix + ".memory", "memHierarchy.MemController")
         memctrl.addParams({
-            "clock" : cpu_clock,
-            "backend.mem_size" : "4GiB",
-            "backing" : "malloc",
-            "initBacking" : 1,
+            "backend.mem_size" : "8GiB",
+            "clock" : "1GHz",
+            "request_width" : "64",
             "addr_range_start" : "0x0",
-            "addr_range_end" : "0x7fffffff",
+            "addr_range_end" : "0xffffffff",
+            "interleave_size" : "64B",
+            "interleave_step" : "128B",
             "debug" : mc_debug,
             "debug_level" : 11,
             "debug_addr" : debug_addr,
@@ -66,12 +69,11 @@ class Builder:
 
         memToDir = memctrl.setSubComponent("cpulink", "memHierarchy.MemLink")
 
-        memory = memctrl.setSubComponent("backend", "memHierarchy.simpleMem")
+        memory = memctrl.setSubComponent("backend", "memHierarchy.HBMDRAMSimMemory")
         memory.addParams({
-            "mem_size" : "2GiB",
-            "access_time" : "1 ns",
-            "debug" : 0,
-            "debug_level" : 10,
+            "mem_size" : "8GiB",
+            "device_ini" : "hbmdevice.ini",
+            "system_ini" : "hbmsystem.ini",
         })
 
         link = sst.Link(self.prefix + ".link_dir_mem")
@@ -89,7 +91,7 @@ class Builder:
         memNIC = comp.setSubComponent(linkType, "memHierarchy.MemNIC")
         memNIC.addParams({
             "group" : group,
-            "network_bw" : "256GB/s",
+            "network_bw" : "300GB/s",
             "debug": 0,
             "debug_level": 10,
         })
