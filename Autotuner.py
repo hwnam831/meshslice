@@ -1,8 +1,8 @@
 import os
 from functools import partial
 
-import jax
-import jax.numpy as jnp
+#import jax
+#import jax.numpy as jnp
 import time
 import CostModel
 import copy
@@ -14,9 +14,9 @@ from CostModel import DeviceMesh
 #bws = {'allgather':33.224e9, 'reducescatter':31.73e9, 'sendrecv':36.3e9}
 #base_overheads = {'allgather':5e-5, 'reducescatter':5e-5, 'sendrecv':5e-5}
 
-latencies = {'allgather':5e-6, 'reducescatter':5e-6, 'sendrecv':5e-5}
-bws = {'allgather':(27.472e9, 79.751e9), 'reducescatter':(37.506e9, 63.167e9), 'sendrecv':(38.801e9, 35.224e9)}
-base_overheads = {'allgather':13e-6, 'reducescatter':26e-6, 'sendrecv':13e-6}
+latencies = {'allgather':6e-6, 'reducescatter':6e-6, 'sendrecv':6e-6}
+bws = {'allgather':(60e9, 60e9), 'reducescatter':(50e9, 50e9), 'sendrecv':(38.801e9, 35.224e9)}
+base_overheads = {'allgather':100e-6, 'reducescatter':100e-6, 'sendrecv':100e-6}
 
 class FFLayerModel:
     def __init__(self, B,I,O, dataflow=None, transpose=False):
@@ -247,7 +247,13 @@ def possibleK(B,I,O,meshshape,dataflow):
         kdim = O//mlcm//8
     else:
         kdim = B//mlcm//8
-    if kdim%48 == 0:
+    if kdim%96 == 0:
+        return [3,4,6,8,12,16,24,32]
+    elif kdim%160 == 0:
+        return [4,5,8,10,16,20,32]
+    elif kdim%32 == 0:
+        return [4,8,16,32]
+    elif kdim%48 == 0:
         return [3,4,6,8,12,16,24]
     elif kdim%40 == 0:
         return [4,5,8,10,20]
@@ -506,10 +512,13 @@ if __name__ == '__main__':
     K=8
     gpt3 = build_transformerBlock(B,S,H,D)
     gpt3.printGraph()
+    mesh = DeviceMesh((NROW,NCOL),
+            256*1000**4, bws_per_direction=bws,
+            link_latencies=latencies, base_overheads=base_overheads)
     computetime = 0
-    computetime += 3* CostModel.estimateMatmul(None,B*S//NROW,H*D//NCOL,H*D//K)*K
-    computetime += 3* CostModel.estimateMatmul(None,B*S//NROW,3*H*D//NCOL,H*D//K)*K
-    computetime += 6* CostModel.estimateMatmul(None,B*S//NROW,4*H*D//NCOL,H*D//K)*K
+    computetime += 3* CostModel.estimateMatmul(mesh,B*S//NROW,H*D//NCOL,H*D//K)*K
+    computetime += 3* CostModel.estimateMatmul(mesh,B*S//NROW,3*H*D//NCOL,H*D//K)*K
+    computetime += 6* CostModel.estimateMatmul(mesh,B*S//NROW,4*H*D//NCOL,H*D//K)*K
     print("Emulated compute time: {}".format(computetime*1000))
     #shapes = [(4,96), (8,48), (12,32), (16,24), (24,16), (32,12), (48,8), (96,4)]
     shapes = []
@@ -521,9 +530,7 @@ if __name__ == '__main__':
         curcol = curcol //2
     print(shapes)
     tuner = Autotuner(gpt3, shapes)
-    mesh = DeviceMesh((NROW,NCOL),
-                    242*1024**4, bws_per_direction=bws,
-                    link_latencies=latencies, base_overheads=base_overheads)
+    
     ffmodel = FFLayerModel(B*S,H*D,4*H*D,'os')
     ffmodel.emulate(mesh,4)
     tuner.emulatedFinetune(args.sweep)

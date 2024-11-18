@@ -1,6 +1,6 @@
 import numpy as np
-import jax
-import jax.numpy as jnp
+#import jax
+#import jax.numpy as jnp
 from functools import partial
 import time
 
@@ -70,7 +70,7 @@ def estimateSkew(mesh, data_shape: tuple, precision):
     steps = mesh.shape[0]//2
     time_per_step = data_shape[0]*data_shape[1] * (precision//8) / bw
     return base_overhead + steps * time_per_step + link_latency*steps
-
+'''
 def estimateMatmul(mesh, M, N, K, input_precision=jnp.bfloat16, layout='nn', repeat=5):
     #flop_count = M*N*K*2
     #return flop_count/mesh.flops
@@ -96,10 +96,12 @@ def estimateMatmul(mesh, M, N, K, input_precision=jnp.bfloat16, layout='nn', rep
     
     
     return (endtime-starttime)/repeat
+'''
+
     
-#def estimateMatmul(mesh, M, N, K, input_precision=jnp.bfloat16, output_precision=jnp.float32, repeat=10):
-#    flop_count = M*N*K*2
-#    return flop_count/mesh.flops
+def estimateMatmul(mesh, M, N, K, input_precision=np.float16, layout='nn', repeat=10):
+    flop_count = M*N*K*2
+    return flop_count/mesh.flops
     
     
 
@@ -255,7 +257,8 @@ def MeshFlow_OS(mesh, M, N, K, steps=32, precisions=(16,16,16)): #assume synchro
     allgather_w = estimateAllgather(mesh, wshape, 0, precision=precisions[1])
     compute = estimateMatmul(mesh, ishape[0], wshape[1], K//steps)
     
-    return (max(allgather_i,allgather_w), max(allgather_i, allgather_w, compute) * (steps-1) + compute)
+    #return (max(allgather_i,allgather_w), max(allgather_i, allgather_w, compute) * (steps-1) + compute)
+    return ((allgather_i+allgather_w)/2, max((allgather_i+allgather_w)/2, compute) * (steps-1) + compute)
 
 def MeshFlow_LS(mesh, M, N, K, steps=32, precisions=(16,16,16)): #assume synchronized allgather
     
@@ -269,7 +272,8 @@ def MeshFlow_LS(mesh, M, N, K, steps=32, precisions=(16,16,16)): #assume synchro
     
     #startup = max(mesh.shape[0],mesh.shape[1])-1
     #return (roll_o+ mesh.link_latency*mesh.shape[1], max(roll_o, roll_w, compute) * (steps-1) + compute)
-    return (allgather_w+reducescatter_o, compute + max(allgather_w, reducescatter_o, compute) * (steps-1))
+    #return (allgather_w+reducescatter_o, compute + max(allgather_w, reducescatter_o, compute) * (steps-1))
+    return ((allgather_w+reducescatter_o)/2, compute + max((allgather_w+reducescatter_o)/2, compute) * (steps-1))
 def MeshFlow_RS(mesh, M, N, K, steps=32, precisions=(16,16,16)): #assume synchronized allgather
     #steps = np.lcm(mesh.shape[0], mesh.shape[1])*min(np.gcd(mesh.shape[0], mesh.shape[1]), multiplier)
     #steps = np.lcm(mesh.shape[0], mesh.shape[1])
@@ -282,8 +286,8 @@ def MeshFlow_RS(mesh, M, N, K, steps=32, precisions=(16,16,16)): #assume synchro
     compute = estimateMatmul(mesh, M//steps, oshape[1], ishape[0], layout='tn')
     
     #startup = max(mesh.shape[0],mesh.shape[1])-1
-    return (allgather_i+ reducescatter_o, compute + max(allgather_i, reducescatter_o, compute) * (steps-1))
-
+    #return (allgather_i+ reducescatter_o, compute + max(allgather_i, reducescatter_o, compute) * (steps-1))
+    return ((allgather_i+ reducescatter_o)/2, compute + max((allgather_i+ reducescatter_o)/2, compute) * (steps-1))
 def LogicalRing_ISplit(mesh, M, N, K, steps=8):
     P = mesh.shape[0]*mesh.shape[1]
     ishape = (M, K//P)
