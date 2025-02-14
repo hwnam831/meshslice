@@ -255,6 +255,8 @@ def possibleK(B,I,O,meshshape,dataflow):
         return [4,8,16,32]
     elif kdim%48 == 0:
         return [3,4,6,8,12,16,24]
+    elif kdim%80 == 0:
+        return [4,5,8,10,16,20,40]
     elif kdim%40 == 0:
         return [4,5,8,10,20]
     elif kdim%24 == 0:
@@ -513,7 +515,7 @@ if __name__ == '__main__':
     gpt3 = build_transformerBlock(B,S,H,D)
     gpt3.printGraph()
     mesh = DeviceMesh((NROW,NCOL),
-            256*1000**4, bws_per_direction=bws,
+            249*1000**4, bws_per_direction=bws,
             link_latencies=latencies, base_overheads=base_overheads)
     computetime = 0
     computetime += 3* CostModel.estimateMatmul(mesh,B*S//NROW,H*D//NCOL,H*D//K)*K
