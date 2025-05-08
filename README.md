@@ -1,18 +1,18 @@
-# MeshFlow
+# MeshSlice
 
-This repository contains Jax implementation of MeshFlow: Efficient 2D Tensor Parallelism for Distributed DNN Training ([paper](github.com)).
+This repository contains Jax implementation of MeshSlice: Efficient 2D Tensor Parallelism for Distributed DNN Training ([paper](github.com)).
 
-MeshFlow is a framework with two components: 2D GeMM algorithm and autotuner to optimize the hyperparameters of the 2D GeMM.
+MeshSlice is a framework with two components: 2D GeMM algorithm and autotuner to optimize the hyperparameters of the 2D GeMM.
 
-See `TensorParallel.py` for the MeshFlow 2D GeMM implementation, and `Autotuner.py` for the autotuner implementation.
+See `TensorParallel.py` for the MeshSlice 2D GeMM implementation, and `Autotuner.py` for the autotuner implementation.
 
 ## Instruction - CPU
 
-You can run the MeshFlow 2D GeMM algorithms by emulating the 2D device mesh with CPU.
+You can run the MeshSlice 2D GeMM algorithms by emulating the 2D device mesh with CPU.
 
 Install CPU version of Jax with `pip install jax` in any supported system.
 
-Then, follow `MeshFlowCPU.ipynb` to verify the correctness of MeshFlow 2D GeMM algorithms.
+Then, follow `MeshFlowCPU.ipynb` to verify the correctness of MeshSlice 2D GeMM algorithms.
 
 ## Instructions - TPU
 
