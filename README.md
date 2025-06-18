@@ -3,6 +3,15 @@
 This repository contains Jax implementation of MeshSlice: Efficient 2D Tensor Parallelism for Distributed DNN Training ([paper](https://iacoma.cs.uiuc.edu/iacoma-papers/isca25_1.pdf)).
 To cite the paper, please use the following bibtex entry.
 
+```bibtex
+@inproceedings{nam2025meshslice,
+  title={MeshSlice: Efficient 2D Tensor Parallelism for Distributed DNN Training},
+  author={Nam, Hyoungwook and Gerogiannis, Gerasimos and Torrellas, Josep},
+  booktitle={2025 ACM/IEEE 52nd Annual International Symposium on Computer Architecture (ISCA)},
+  year={2025}
+}
+```
+
 MeshSlice is a framework with two components: 2D GeMM algorithm and autotuner to optimize the hyperparameters of the 2D GeMM.
 
 See `TensorParallel.py` for the MeshSlice 2D GeMM implementation, and `Autotuner.py` for the autotuner implementation.
