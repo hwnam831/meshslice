@@ -159,7 +159,7 @@ class ShardedAttention:
         self.forward = jax.jit(_attn)
     
 class TransformerBlock:
-    def __init__(self, mesh, S,H,D, dataflows, alg='meshflow', ksplits=[4,4,4,4]):
+    def __init__(self, mesh, S,H,D, dataflows, alg='meshslice', ksplits=[4,4,4,4]):
         self.mesh = mesh
         self.norm1 = ShardedLayerNorm(mesh, H*D)
         self.in_proj = ShardedFFLayer(mesh, alg, dataflows[0], ksplits[0], H*D, 3*H*D)
