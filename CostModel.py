@@ -71,6 +71,8 @@ def estimateSkew(mesh, data_shape: tuple, precision):
     time_per_step = data_shape[0]*data_shape[1] * (precision//8) / bw
     return base_overhead + steps * time_per_step + link_latency*steps
 
+#If you want a better precision for the compute time, use this function instead to benchmark the compute time
+'''
 def estimateMatmul(mesh, M, N, K, input_precision=jnp.bfloat16, layout='nn', repeat=5):
     #flop_count = M*N*K*2
     #return flop_count/mesh.flops
@@ -96,10 +98,13 @@ def estimateMatmul(mesh, M, N, K, input_precision=jnp.bfloat16, layout='nn', rep
     
     
     return (endtime-starttime)/repeat
+
+'''
+
     
-#def estimateMatmul(mesh, M, N, K, input_precision=jnp.bfloat16, output_precision=jnp.float32, repeat=10):
-#    flop_count = M*N*K*2
-#    return flop_count/mesh.flops
+def estimateMatmul(mesh, M, N, K, input_precision=jnp.bfloat16, layout='nn', repeat=10):
+    flop_count = M*N*K*2
+    return flop_count/mesh.flops
     
     
 
@@ -246,7 +251,7 @@ def GSPMD_RS(mesh, M, N, K, steps=8, precisions=(16,16,16)):
     reducescatter_o = estimateReduceScatter(mesh, oshape, 0, precision=precisions[2])
     return (reducescatter_o, max(allgather_i,compute))
 
-def MeshFlow_OS(mesh, M, N, K, steps=32, precisions=(16,16,16)): #assume synchronized allgather
+def MeshSlice_OS(mesh, M, N, K, steps=32, precisions=(16,16,16)): #assume synchronized allgather
 
     ishape = (M//mesh.shape[0], K//mesh.shape[1]//steps)
     wshape = (K//mesh.shape[0]//steps, N//mesh.shape[1])
@@ -257,7 +262,7 @@ def MeshFlow_OS(mesh, M, N, K, steps=32, precisions=(16,16,16)): #assume synchro
     
     return (max(allgather_i,allgather_w), max(allgather_i, allgather_w, compute) * (steps-1) + compute)
 
-def MeshFlow_LS(mesh, M, N, K, steps=32, precisions=(16,16,16)): #assume synchronized allgather
+def MeshSlice_LS(mesh, M, N, K, steps=32, precisions=(16,16,16)): #assume synchronized allgather
     
     ishape = (M//mesh.shape[0], K//mesh.shape[1])
     wshape = (N//mesh.shape[0]//steps, K//mesh.shape[1])
@@ -270,7 +275,7 @@ def MeshFlow_LS(mesh, M, N, K, steps=32, precisions=(16,16,16)): #assume synchro
     #startup = max(mesh.shape[0],mesh.shape[1])-1
     #return (roll_o+ mesh.link_latency*mesh.shape[1], max(roll_o, roll_w, compute) * (steps-1) + compute)
     return (allgather_w+reducescatter_o, compute + max(allgather_w, reducescatter_o, compute) * (steps-1))
-def MeshFlow_RS(mesh, M, N, K, steps=32, precisions=(16,16,16)): #assume synchronized allgather
+def MeshSlice_RS(mesh, M, N, K, steps=32, precisions=(16,16,16)): #assume synchronized allgather
     #steps = np.lcm(mesh.shape[0], mesh.shape[1])*min(np.gcd(mesh.shape[0], mesh.shape[1]), multiplier)
     #steps = np.lcm(mesh.shape[0], mesh.shape[1])
     ishape = (K//mesh.shape[0], M//mesh.shape[1]//steps)

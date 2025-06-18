@@ -17,6 +17,7 @@ from CostModel import DeviceMesh
 latencies = {'allgather':5e-6, 'reducescatter':5e-6, 'sendrecv':5e-5}
 bws = {'allgather':(27.472e9, 79.751e9), 'reducescatter':(37.506e9, 63.167e9), 'sendrecv':(38.801e9, 35.224e9)}
 base_overheads = {'allgather':13e-6, 'reducescatter':26e-6, 'sendrecv':13e-6}
+eff_flops = 242*1024**4
 
 class FFLayerModel:
     def __init__(self, B,I,O, dataflow=None, transpose=False):
@@ -141,30 +142,30 @@ class FFLayerModel:
     def emulate(self, mesh:DeviceMesh, K):
         if not self.transpose:
             if self.dataflow == 'os':
-                fwtime = CostModel.MeshFlow_OS(mesh, self.bsize, self.out_dim, self.in_dim, K)
-                bdtime = CostModel.MeshFlow_LS(mesh, self.bsize, self.in_dim, self.out_dim, K)
-                bwtime = CostModel.MeshFlow_RS(mesh, self.in_dim, self.out_dim, self.bsize, K)
+                fwtime = CostModel.MeshSlice_OS(mesh, self.bsize, self.out_dim, self.in_dim, K)
+                bdtime = CostModel.MeshSlice_LS(mesh, self.bsize, self.in_dim, self.out_dim, K)
+                bwtime = CostModel.MeshSlice_RS(mesh, self.in_dim, self.out_dim, self.bsize, K)
             elif self.dataflow == 'ls':
-                fwtime = CostModel.MeshFlow_LS(mesh, self.bsize, self.out_dim, self.in_dim, K)
-                bdtime = CostModel.MeshFlow_OS(mesh, self.bsize, self.in_dim, self.out_dim, K)
-                bwtime = CostModel.MeshFlow_RS(mesh, self.out_dim, self.in_dim, self.bsize, K)
+                fwtime = CostModel.MeshSlice_LS(mesh, self.bsize, self.out_dim, self.in_dim, K)
+                bdtime = CostModel.MeshSlice_OS(mesh, self.bsize, self.in_dim, self.out_dim, K)
+                bwtime = CostModel.MeshSlice_RS(mesh, self.out_dim, self.in_dim, self.bsize, K)
             else: #ws
-                fwtime = CostModel.MeshFlow_RS(mesh, self.bsize, self.out_dim, self.in_dim, K)
-                bdtime = CostModel.MeshFlow_LS(mesh, self.in_dim, self.bsize, self.out_dim, K)
-                bwtime = CostModel.MeshFlow_OS(mesh, self.in_dim, self.out_dim, self.bsize, K)
+                fwtime = CostModel.MeshSlice_RS(mesh, self.bsize, self.out_dim, self.in_dim, K)
+                bdtime = CostModel.MeshSlice_LS(mesh, self.in_dim, self.bsize, self.out_dim, K)
+                bwtime = CostModel.MeshSlice_OS(mesh, self.in_dim, self.out_dim, self.bsize, K)
         else: #transposed versions
             if self.dataflow == 'os':
-                fwtime = CostModel.MeshFlow_OS(mesh, self.out_dim, self.bsize, self.in_dim, K)
-                bdtime = CostModel.MeshFlow_RS(mesh, self.in_dim, self.bsize, self.out_dim, K)
-                bwtime = CostModel.MeshFlow_LS(mesh, self.out_dim, self.in_dim, self.bsize, K)
+                fwtime = CostModel.MeshSlice_OS(mesh, self.out_dim, self.bsize, self.in_dim, K)
+                bdtime = CostModel.MeshSlice_RS(mesh, self.in_dim, self.bsize, self.out_dim, K)
+                bwtime = CostModel.MeshSlice_LS(mesh, self.out_dim, self.in_dim, self.bsize, K)
             elif self.dataflow == 'ls':
-                fwtime = CostModel.MeshFlow_RS(mesh, self.out_dim, self.bsize, self.in_dim, K)
-                bdtime = CostModel.MeshFlow_OS(mesh, self.in_dim, self.bsize, self.out_dim, K)
-                bwtime = CostModel.MeshFlow_LS(mesh, self.in_dim, self.out_dim, self.bsize, K)
+                fwtime = CostModel.MeshSlice_RS(mesh, self.out_dim, self.bsize, self.in_dim, K)
+                bdtime = CostModel.MeshSlice_OS(mesh, self.in_dim, self.bsize, self.out_dim, K)
+                bwtime = CostModel.MeshSlice_LS(mesh, self.in_dim, self.out_dim, self.bsize, K)
             else: #ws
-                fwtime = CostModel.MeshFlow_LS(mesh, self.out_dim, self.bsize, self.in_dim, K)
-                bdtime = CostModel.MeshFlow_RS(mesh, self.bsize, self.in_dim, self.out_dim, K)
-                bwtime = CostModel.MeshFlow_OS(mesh, self.out_dim, self.in_dim, self.bsize, K)
+                fwtime = CostModel.MeshSlice_LS(mesh, self.out_dim, self.bsize, self.in_dim, K)
+                bdtime = CostModel.MeshSlice_RS(mesh, self.bsize, self.in_dim, self.out_dim, K)
+                bwtime = CostModel.MeshSlice_OS(mesh, self.out_dim, self.in_dim, self.bsize, K)
         #print("fw: {}, bd: {}, bw: {}".format(fwtime, bdtime, bwtime))
         return (fwtime[0] + bdtime[0] + bwtime[0]+fwtime[1] + bdtime[1] + bwtime[1])
     
@@ -343,7 +344,7 @@ class Autotuner:
         for meshshape in self.shapes:
             ksplits = {}
             mesh = DeviceMesh(meshshape,
-                            242*1024**4, bws_per_direction=bws,
+                            eff_flops, bws_per_direction=bws,
                             link_latencies=latencies, base_overheads=base_overheads)
             totalTraffic = 0.0
             totalLatency = 0.0
@@ -391,7 +392,7 @@ class Autotuner:
     def emulateFFTime(self, meshshape, sweep=False):
         totaltime = 0.0
         mesh = DeviceMesh(meshshape,
-                        242*1024**4, bws_per_direction=bws,
+                        eff_flops, bws_per_direction=bws,
                         link_latencies=latencies, base_overheads=base_overheads)
         ksplits = {}
         for lname in self.graph.nodenames:
@@ -487,12 +488,12 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--ksplit', nargs=4, type=int, default=[8,8,8,8])
     parser.add_argument('--batchsize', type=int, default=-1, help='Default is number of chips')
-    parser.add_argument('--seqlen', type=int, default=2048)
-    parser.add_argument('--nheads', type=int, default=96)
-    parser.add_argument('--headdim', type=int, default=128)
-    parser.add_argument('--nrows', type=int, default=4, help='Number of rows in device mesh. Must be multiple of 4')
-    parser.add_argument('--ncols', type=int, default=4, help='Number of cols in device mesh. Must be multiple of 4')
-    parser.add_argument('--alg', type=str, default='noff', choices=['noff','collective', 'cannon', 'wang', 'systolic'])
+    parser.add_argument('--seqlen', type=int, default=2048, help='Token sequence length for LLM training')
+    parser.add_argument('--nheads', type=int, default=96, help='Number of attention heads in transformer block 96 for GPT-3 and 160 for Megatron')
+    parser.add_argument('--headdim', type=int, default=128, help='Dimension of each attention head in transformer block')
+    parser.add_argument('--nrows', type=int, default=32, help='Number of rows in device mesh. Must be multiple of 4')
+    parser.add_argument('--ncols', type=int, default=8, help='Number of cols in device mesh. Must be multiple of 4')
+
     parser.add_argument('--sweep', action='store_true')
     args = parser.parse_args()
 
@@ -500,16 +501,19 @@ if __name__ == '__main__':
     S = args.seqlen
     H = args.nheads
     D = args.headdim
-    alg = args.alg
+
     NROW = args.nrows
     NCOL = args.ncols
     K=8
     gpt3 = build_transformerBlock(B,S,H,D)
     gpt3.printGraph()
+    mesh = DeviceMesh((NROW,NCOL),
+                    eff_flops, bws_per_direction=bws,
+                    link_latencies=latencies, base_overheads=base_overheads)
     computetime = 0
-    computetime += 3* CostModel.estimateMatmul(None,B*S//NROW,H*D//NCOL,H*D//K)*K
-    computetime += 3* CostModel.estimateMatmul(None,B*S//NROW,3*H*D//NCOL,H*D//K)*K
-    computetime += 6* CostModel.estimateMatmul(None,B*S//NROW,4*H*D//NCOL,H*D//K)*K
+    computetime += 3* CostModel.estimateMatmul(mesh,B*S//NROW,H*D//NCOL,H*D//K)*K
+    computetime += 3* CostModel.estimateMatmul(mesh,B*S//NROW,3*H*D//NCOL,H*D//K)*K
+    computetime += 6* CostModel.estimateMatmul(mesh,B*S//NROW,4*H*D//NCOL,H*D//K)*K
     print("Emulated compute time: {}".format(computetime*1000))
     #shapes = [(4,96), (8,48), (12,32), (16,24), (24,16), (32,12), (48,8), (96,4)]
     shapes = []
@@ -519,11 +523,9 @@ if __name__ == '__main__':
         shapes.append((currow, curcol))
         currow = currow * 2
         curcol = curcol //2
-    print(shapes)
+    #print(shapes)
     tuner = Autotuner(gpt3, shapes)
-    mesh = DeviceMesh((NROW,NCOL),
-                    242*1024**4, bws_per_direction=bws,
-                    link_latencies=latencies, base_overheads=base_overheads)
+    
     ffmodel = FFLayerModel(B*S,H*D,4*H*D,'os')
     ffmodel.emulate(mesh,4)
     tuner.emulatedFinetune(args.sweep)

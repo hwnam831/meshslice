@@ -150,7 +150,7 @@ def Wang_RS(Xji, Wij, row, col, K, B):
 
     
 
-def MeshFlow_OS(Xij, Wij, row, col, K, B): #smallest block size B
+def MeshSlice_OS(Xij, Wij, row, col, K, B): #smallest block size B
     
     X_split = Xij.reshape(Xij.shape[0], Xij.shape[1]//(K*B),K,B)
     W_split = Wij.reshape(Wij.shape[0]//(K*B),K,B, Wij.shape[1])
@@ -171,7 +171,7 @@ def MeshFlow_OS(Xij, Wij, row, col, K, B): #smallest block size B
     Yij, Xk, Wk = jax.lax.fori_loop(1,K-1,body_fn,init_val=(Yij,Xk,Wk))
     return Yij + jnp.einsum('nikb,ikbo->no',Xk,Wk)
 
-def MeshFlow_LS(Xij, Wji, row, col, K, B): #smallest block size B
+def MeshSlice_LS(Xij, Wji, row, col, K, B): #smallest block size B
     O = Wji.shape[0]*jax.lax.psum(1, row)
     C = jax.lax.psum(1,col)
     W_split = Wji.reshape(Wji.shape[0]//K//B,K,B, Wji.shape[1])
@@ -192,7 +192,7 @@ def MeshFlow_LS(Xij, Wji, row, col, K, B): #smallest block size B
     Yij = jax.lax.fori_loop(1,K,body_fn,init_val=Yij)
     return Yij.reshape(Xij.shape[0],-1)
 
-def MeshFlow_RS(Xji, Wij, row, col, K, B): #smallest block size B
+def MeshSlice_RS(Xji, Wij, row, col, K, B): #smallest block size B
     N = Xji.shape[1]*jax.lax.psum(1, col)
     R = jax.lax.psum(1,row)
     X_split = Xji.reshape(Xji.shape[0], Xji.shape[1]//K//B,K,B)
@@ -359,7 +359,7 @@ class SPMD:
             assert mesh.devices.shape[0] == mesh.devices.shape[1]
             self.funcs = {'os':Cannon_OS, 'ls':Cannon_LS, 'rs':Cannon_RS}
         else:
-            self.funcs = {'os':MeshFlow_OS, 'ls':MeshFlow_LS, 'rs':MeshFlow_RS}
+            self.funcs = {'os':MeshSlice_OS, 'ls':MeshSlice_LS, 'rs':MeshSlice_RS}
     def OS(self, K=8):
         myfunc = partial(shard_map, mesh=self.mesh, in_specs=(self.spec,self.spec),
          out_specs=self.spec)(partial(
