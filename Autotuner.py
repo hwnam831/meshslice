@@ -15,8 +15,9 @@ from CostModel import DeviceMesh
 #base_overheads = {'allgather':5e-5, 'reducescatter':5e-5, 'sendrecv':5e-5}
 
 latencies = {'allgather':5e-6, 'reducescatter':5e-6, 'sendrecv':5e-5}
-bws = {'allgather':(27.472e9, 79.751e9), 'reducescatter':(37.506e9, 63.167e9), 'sendrecv':(38.801e9, 35.224e9)}
-base_overheads = {'allgather':13e-6, 'reducescatter':26e-6, 'sendrecv':13e-6}
+#bws = {'allgather':(27.472e9, 79.751e9), 'reducescatter':(37.506e9, 63.167e9), 'sendrecv':(38.801e9, 35.224e9)}
+bws = {'allgather':(27.172e9, 59.751e9), 'reducescatter':(27.506e9, 53.167e9), 'sendrecv':(38.801e9, 35.224e9)}
+base_overheads = {'allgather':5e-5, 'reducescatter':5e-5, 'sendrecv':13e-6}
 
 class FFLayerModel:
     def __init__(self, B,I,O, dataflow=None, transpose=False):
@@ -408,6 +409,7 @@ class Autotuner:
                 bestTime = model.emulate(mesh,klist[0])
                 bestK = klist[0]
                 if sweep:
+                    print(layer)
                     print(klist)
                     print("FFtime at k={} is {}".format(bestK,bestTime))
                 for k in klist[1:]:

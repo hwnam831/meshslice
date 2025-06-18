@@ -70,6 +70,7 @@ def estimateSkew(mesh, data_shape: tuple, precision):
     steps = mesh.shape[0]//2
     time_per_step = data_shape[0]*data_shape[1] * (precision//8) / bw
     return base_overhead + steps * time_per_step + link_latency*steps
+'''
 
 def estimateMatmul(mesh, M, N, K, input_precision=jnp.bfloat16, layout='nn', repeat=5):
     #flop_count = M*N*K*2
@@ -96,10 +97,16 @@ def estimateMatmul(mesh, M, N, K, input_precision=jnp.bfloat16, layout='nn', rep
     
     
     return (endtime-starttime)/repeat
+'''
+
     
-#def estimateMatmul(mesh, M, N, K, input_precision=jnp.bfloat16, output_precision=jnp.float32, repeat=10):
-#    flop_count = M*N*K*2
-#    return flop_count/mesh.flops
+def estimateMatmul(mesh, M, N, K, input_precision=jnp.bfloat16, output_precision=jnp.float32, repeat=10, layout='nn'):
+    flop_count = M*N*K*2
+    if mesh is None:
+        flops = 242*1024**4
+    else:
+        flops = mesh.flops
+    return flop_count/flops
     
     
 
@@ -253,6 +260,7 @@ def Systolic_OS(mesh, M, N, K, steps=32, precisions=(16,16,16)): #assume synchro
     
     allgather_i = estimateAllgather(mesh, ishape, 1, precision=precisions[0])
     allgather_w = estimateAllgather(mesh, wshape, 0, precision=precisions[1])
+    print("AG_i: {:.4f} AG_w: {:.4f}".format(allgather_i*1000, allgather_w*1000))
     compute = estimateMatmul(mesh, ishape[0], wshape[1], K//steps)
     
     return (max(allgather_i,allgather_w), max(allgather_i, allgather_w, compute) * (steps-1) + compute)
@@ -265,6 +273,7 @@ def Systolic_IS(mesh, M, N, K, steps=32, precisions=(16,16,16)): #assume synchro
     
     allgather_w = estimateAllgather(mesh, wshape, 0, precision=precisions[1])
     reducescatter_o = estimateReduceScatter(mesh, oshape, 1, precision=precisions[2])
+    print("AG_w: {:.4f} RS_o: {:.4f}".format(allgather_w*1000, reducescatter_o*1000))
     compute = estimateMatmul(mesh, ishape[0], N//steps, ishape[1], layout='nt')
     
     #startup = max(mesh.shape[0],mesh.shape[1])-1
@@ -279,6 +288,7 @@ def Systolic_WS(mesh, M, N, K, steps=32, precisions=(16,16,16)): #assume synchro
     
     allgather_i = estimateAllgather(mesh, ishape, 1, precision=precisions[0])
     reducescatter_o = estimateReduceScatter(mesh, oshape, 0, precision=precisions[2])
+    print("AG_i: {:.4f} RS_o: {:.4f}".format(allgather_i*1000, reducescatter_o*1000))
     compute = estimateMatmul(mesh, M//steps, oshape[1], ishape[0], layout='tn')
     
     #startup = max(mesh.shape[0],mesh.shape[1])-1
